@@ -10,6 +10,10 @@ export const useAuth = () => {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setLoading(true);
       setFirebaseUser(user);
@@ -65,7 +69,7 @@ export const useAuth = () => {
       setProfile,
       loading,
       error,
-      logout: () => signOut(auth)
+      logout: () => auth && signOut(auth)
     }),
     [firebaseUser, profile, loading, error]
   );

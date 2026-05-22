@@ -15,13 +15,25 @@ import {
 } from 'firebase/auth';
 import { firebaseConfig, validateClientEnv } from './config/env.js';
 
-validateClientEnv();
-const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export const firestore = getFirestore(app);
-export const realtimeDb = getDatabase(app);
-export const storage = getStorage(app);
-export const googleProvider = new GoogleAuthProvider();
+export let auth = null;
+export let firestore = null;
+export let realtimeDb = null;
+export let storage = null;
+export let googleProvider = null;
+export let initError = null;
+
+try {
+  validateClientEnv();
+  const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  firestore = getFirestore(app);
+  realtimeDb = getDatabase(app);
+  storage = getStorage(app);
+  googleProvider = new GoogleAuthProvider();
+} catch (error) {
+  console.error('Firebase initialization failed:', error.message);
+  initError = error.message;
+}
 
 export const emailLogin = (email, password) => signInWithEmailAndPassword(auth, email.trim(), password);
 

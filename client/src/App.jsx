@@ -29,7 +29,7 @@ import {
 import AuthScreen from './components/AuthScreen.jsx';
 import Avatar from './components/Avatar.jsx';
 import { api, setTyping as setFirebaseTyping, subscribeChats, subscribeMessages, subscribePresence, subscribeTyping } from './api.js';
-import { changePassword } from './firebase.js';
+import { changePassword, initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
 import { registerBackgroundSync, requestNotificationPermission } from './pwa.js';
 
@@ -62,6 +62,32 @@ function statusText(user) {
 }
 
 export default function App() {
+  if (initError) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-gradient-to-br from-rose-50 to-rose-100 p-4">
+        <div className="w-full max-w-md rounded-3xl border border-rose-200 bg-white p-8 text-center shadow-lg">
+          <h1 className="text-2xl font-black text-rose-700 mb-4 font-sans">Configuration Error</h1>
+          <p className="text-sm text-slate-600 mb-6 font-sans">{initError}</p>
+          <div className="rounded-2xl bg-slate-50 p-4 text-xs text-left text-slate-500 border border-slate-200 font-sans">
+            <p className="font-bold mb-1 text-slate-700">To fix this on Vercel:</p>
+            <ol className="list-decimal pl-4 space-y-1">
+              <li>Go to your Vercel Dashboard</li>
+              <li>Select your project &rarr; Settings &rarr; Environment Variables</li>
+              <li>Add the missing keys:</li>
+              <ul className="list-disc pl-4 mt-1 font-mono text-[10px] text-slate-600">
+                <li>REACT_APP_FIREBASE_API_KEY</li>
+                <li>REACT_APP_FIREBASE_AUTH_DOMAIN</li>
+                <li>REACT_APP_FIREBASE_PROJECT_ID</li>
+                <li>REACT_APP_FIREBASE_APP_ID</li>
+              </ul>
+              <li className="mt-2 text-slate-500">Redeploy your project to apply the changes</li>
+            </ol>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   const authState = useAuth();
 
   if (authState.loading) {
