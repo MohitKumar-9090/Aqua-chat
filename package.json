@@ -1,0 +1,20 @@
+{
+  "name": "aqua-chat",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm --workspace client run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm --workspace client run build",
+    "dev:server": "npm --workspace server run dev",
+    "build:client": "npm --workspace client run build",
+    "start:server": "npm --workspace server start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "AquaChat",
+  "short_name": "AquaChat",
+  "description": "A premium real-time chat platform for messages, groups, calls, statuses, and people search.",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#f8fdff",
+  "theme_color": "#06b6d4",
+  "categories": ["social", "productivity", "communication"],
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open Chats",
+      "short_name": "Chats",
+      "description": "Jump back into your conversations.",
+      "url": "/?panel=chats",
+      "icons": [{ "src": "/shortcut-chat.svg", "sizes": "96x96", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Find People",
+      "short_name": "People",
+      "description": "Search users by username, email, or phone.",
+      "url": "/?panel=people",
+      "icons": [{ "src": "/shortcut-people.svg", "sizes": "96x96", "type": "image/svg+xml" }]
+    }
+  ]
+}
