@@ -18,3 +18,10 @@
     "socket.io": "^4.8.1"
   }
 }
+{
+"scripts": {
+"build": "echo Build complete",
+"start": "node index.js",
+"dev": "nodemon index.js"
+}
+}
