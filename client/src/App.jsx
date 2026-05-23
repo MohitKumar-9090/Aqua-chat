@@ -161,8 +161,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const activeMessagesChatRef = useRef(null);
   const seenTimerRef = useRef(null);
   const callStateRef = useRef(callState);
+  const usersRef = useRef(users);
   selectedChatRef.current = selectedChat;
   callStateRef.current = callState;
+  usersRef.current = users;
 
   const selectedPeer = useMemo(() => directPeer(selectedChat, profile), [selectedChat, profile]);
 
@@ -471,6 +473,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     try {
       if (isCaller) {
         await calls.createCallRoom({ callId, from: uid, to: remoteUid, callType });
+        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType });
       } else {
         await calls.verifyCallAccess(callId, uid);
       }
@@ -508,7 +511,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         await calls.publishCallOffer(callId, offer);
-        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType });
         iceReady = true;
 
         const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
@@ -603,11 +605,27 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   useEffect(() => {
     const uid = auth?.currentUser?.uid || profile?._id;
     if (!uid) return undefined;
+
+    let cancelled = false;
     let unsubscribe = () => {};
+
     getCallRuntime().then((calls) => {
-      unsubscribe = calls.subscribeIncomingCalls(uid, async (incoming) => {
-        if (!incoming || callStateRef.current?.active) return;
-        const caller = users.find((user) => user._id === incoming.from) || { _id: incoming.from, displayName: 'Incoming call' };
+      if (cancelled) return;
+      unsubscribe = calls.subscribeIncomingCalls(uid, (incoming) => {
+        if (!incoming) return;
+
+        const current = callStateRef.current;
+        if (current?.active && !current?.incoming) return;
+        if (current?.incoming && current?.callId === incoming.id) {
+          if (incoming.offer && !current.offer) {
+            setCallState((prev) => (prev ? { ...prev, offer: incoming.offer } : prev));
+          }
+          return;
+        }
+
+        const caller =
+          usersRef.current.find((user) => user._id === incoming.from) ||
+          { _id: incoming.from, displayName: 'Incoming call' };
         setActiveCallId(incoming.id);
         setCallState({
           active: true,
@@ -617,12 +635,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           caller,
           from: incoming.from,
           to: incoming.to,
-          offer: incoming.offer
+          offer: incoming.offer || null
         });
       });
     });
-    return () => unsubscribe();
-  }, [profile?._id, users]);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [profile?._id, firebaseUser?.uid]);
 
   return (
     <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4">

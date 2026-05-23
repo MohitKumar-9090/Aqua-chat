@@ -149,34 +149,57 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
 
 export const subscribeIncomingCalls = (uid, handler) => {
   const incomingRef = dbRef(realtimeDb, `userIncoming/${uid}`);
-  return onValue(
+  let roomUnsubscribe = null;
+  let watchedCallId = null;
+
+  const clearRoomWatch = () => {
+    roomUnsubscribe?.();
+    roomUnsubscribe = null;
+    watchedCallId = null;
+  };
+
+  const watchCallRoom = (callId) => {
+    if (watchedCallId === callId && roomUnsubscribe) return;
+    clearRoomWatch();
+    watchedCallId = callId;
+    logRtdb('listen', `calls/${callId}`, { incomingFor: uid });
+
+    roomUnsubscribe = onValue(
+      dbRef(realtimeDb, `calls/${callId}`),
+      (roomSnap) => {
+        const room = roomSnap.val();
+        if (!room || room.status !== 'ringing' || room.to !== uid) {
+          logRtdb('incoming:skip', `calls/${callId}`, { status: room?.status, to: room?.to });
+          handler(null);
+          return;
+        }
+        logRtdb('incoming:ring', `calls/${callId}`, { hasOffer: Boolean(room.offer) });
+        handler({ id: callId, ...room });
+      },
+      (error) => logRtdbError('onValue', `calls/${callId}`, error)
+    );
+  };
+
+  const incomingUnsubscribe = onValue(
     incomingRef,
-    async (snap) => {
+    (snap) => {
       const index = snap.val() || {};
       const callIds = Object.keys(index);
+      logRtdb('incoming:index', `userIncoming/${uid}`, { callIds });
       if (!callIds.length) {
+        clearRoomWatch();
         handler(null);
         return;
       }
-
-      const rooms = await Promise.all(
-        callIds.map(async (callId) => {
-          try {
-            const roomSnap = await get(dbRef(realtimeDb, `calls/${callId}`));
-            const room = roomSnap.val();
-            if (!room || room.status !== 'ringing' || room.to !== uid) return null;
-            return { id: callId, ...room };
-          } catch (error) {
-            logRtdbError('get', `calls/${callId}`, error);
-            return null;
-          }
-        })
-      );
-
-      handler(rooms.find(Boolean) || null);
+      watchCallRoom(callIds[callIds.length - 1]);
     },
     (error) => logRtdbError('onValue', `userIncoming/${uid}`, error)
   );
+
+  return () => {
+    incomingUnsubscribe();
+    clearRoomWatch();
+  };
 };
 
 export const subscribeCallRoom = (callId, handler) => {
