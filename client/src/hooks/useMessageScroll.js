@@ -10,7 +10,8 @@ export const isNearBottom = (element, threshold = NEAR_BOTTOM_THRESHOLD) => {
 const scrollSignature = (messages) => {
   if (!messages.length) return '0';
   const last = messages[messages.length - 1];
-  return `${messages.length}:${last?.localKey || last?._id || ''}:${last?.pending ? 1 : 0}`;
+  const first = messages[0];
+  return `${messages.length}:${first?.localKey || first?._id}:${last?.localKey || last?._id}`;
 };
 
 /**

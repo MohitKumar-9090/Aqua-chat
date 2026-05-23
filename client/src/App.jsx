@@ -369,7 +369,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
       if (activeMessagesChatRef.current !== chatId) return;
       setMessages((current) => {
-        const next = mergeWithPendingMessages(nextMessages, current);
+        let next = nextMessages;
+        const hasPending = current.some((item) => item.pending);
+        if (hasPending) {
+          next = mergeWithPendingMessages(nextMessages, current);
+        }
         return messagesListEqual(current, next) ? current : next;
       });
       clearTimeout(seenTimerRef.current);
@@ -544,8 +548,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const attachLocalStream = (stream, callType) => {
     localStreamRef.current = stream;
-    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-    localVideoRef.current?.play?.().catch(() => {});
+    const video = localVideoRef.current;
+    if (video) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
     setCallState((current) => ({
       ...current,
       active: true,
@@ -587,13 +594,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const attachRemoteMedia = () => {
     const stream = remoteStreamRef.current;
-    if (!stream) return;
     const video = remoteVideoRef.current;
     const audio = remoteAudioRef.current;
-    if (video && video.srcObject !== stream) video.srcObject = stream;
-    if (audio && audio.srcObject !== stream) audio.srcObject = stream;
-    video?.play?.().catch(() => {});
-    audio?.play?.().catch(() => {});
+    
+    if (stream) {
+      if (video && stream.getVideoTracks().length) {
+        video.srcObject = stream;
+        video.play().catch(() => {});
+      }
+      if (audio) {
+        audio.srcObject = stream;
+        audio.play().catch(() => {});
+      }
+    }
   };
 
   const signalingUid = () => {
@@ -621,7 +634,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           (remoteStream) => {
             remoteStreamRef.current = remoteStream;
             setRemoteMediaEpoch((n) => n + 1);
-            attachRemoteMedia();
           },
           (candidate) => {
             calls.pushIceCandidate(callId, uid, candidate).catch((error) => {
@@ -635,7 +647,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       peerConnectionRef.current = pc;
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') attachRemoteMedia();
+        if (pc.connectionState === 'connected') setRemoteMediaEpoch((n) => n + 1);
       };
 
       const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
@@ -650,8 +662,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         if (isCaller && answer && !peerConnectionRef.current.currentRemoteDescription) {
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
           await peerConnectionRef.current.flushRemoteIceCandidates();
-          setRemoteMediaEpoch((n) => n + 1);
-          attachRemoteMedia();
         }
         if (room.status === 'ended') endCall();
       });
@@ -667,8 +677,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
-        setRemoteMediaEpoch((n) => n + 1);
-        attachRemoteMedia();
         const answer = await pc.createAnswer({
           offerToReceiveAudio: true,
           offerToReceiveVideo: callType === 'video'
@@ -678,14 +686,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       }
     } finally {
       setCallState((current) => (current ? { ...current, preparing: false } : current));
-      attachRemoteMedia();
     }
   };
 
   useEffect(() => {
     if (!callState?.active) return;
     attachRemoteMedia();
-  }, [callState?.active, callState?.callType, callState?.preparing, callState?.incoming, remoteMediaEpoch]);
+  }, [remoteMediaEpoch]);
 
   useEffect(() => {
     if (callState?.active && callState?.incoming) {

@@ -333,14 +333,33 @@ export const subscribeMessages = (chatId, handler) => {
   let unsubscribe = () => {};
   let activeChatId = chatId;
   const messageMap = new Map();
+  let lastEmitted = null;
   const primaryQuery = query(
     collection(firestore, 'chats', chatId, 'messages'),
     orderBy('clientCreatedAt', 'asc'),
     limit(100)
   );
 
+  const shouldEmit = (newMessages) => {
+    if (!lastEmitted) return true;
+    if (newMessages.length !== lastEmitted.length) return true;
+    for (let i = 0; i < newMessages.length; i++) {
+      const n = newMessages[i];
+      const l = lastEmitted[i];
+      if (n._id !== l._id || n.clientCreatedAt !== l.clientCreatedAt) return true;
+      if (n.body !== l.body || n.mediaUrl !== l.mediaUrl || n.type !== l.type) return true;
+      if (n.deletedForEveryone !== l.deletedForEveryone) return true;
+      if ((n.replyTo?.messageId || '') !== (l.replyTo?.messageId || '')) return true;
+    }
+    return false;
+  };
+
   const emit = () => {
-    handler(sortMessages([...messageMap.values()]));
+    const messages = sortMessages([...messageMap.values()]);
+    if (shouldEmit(messages)) {
+      lastEmitted = messages;
+      handler(messages);
+    }
   };
 
   const attach = (q) => {
@@ -348,22 +367,28 @@ export const subscribeMessages = (chatId, handler) => {
       q,
       (snap) => {
         if (activeChatId !== chatId) return;
+        let hasChanges = false;
         if (!snap.docChanges().length) {
           const ids = new Set(snap.docs.map((docSnap) => docSnap.id));
           snap.docs.forEach((docSnap) => messageMap.set(docSnap.id, mapMessageDoc(docSnap, chatId)));
           for (const id of [...messageMap.keys()]) {
-            if (!ids.has(id)) messageMap.delete(id);
+            if (!ids.has(id)) {
+              messageMap.delete(id);
+              hasChanges = true;
+            }
           }
         } else {
           snap.docChanges().forEach((change) => {
             if (change.type === 'removed') {
               messageMap.delete(change.doc.id);
+              hasChanges = true;
               return;
             }
             messageMap.set(change.doc.id, mapMessageDoc(change.doc, chatId));
+            hasChanges = true;
           });
         }
-        emit();
+        if (hasChanges) emit();
       },
       (error) => {
         console.error('Message listener error:', error);
@@ -378,6 +403,7 @@ export const subscribeMessages = (chatId, handler) => {
   return () => {
     activeChatId = null;
     messageMap.clear();
+    lastEmitted = null;
     unsubscribe();
   };
 };
@@ -399,6 +425,7 @@ export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
 
   const merged = new Map();
   const claimedPending = new Set();
+  let hasChanges = false;
 
   serverMessages.forEach((server) => {
     const match = pending.find((item) => !claimedPending.has(item._id) && matchesPendingMessage(item, server));
@@ -415,23 +442,32 @@ export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
   });
 
   pending.forEach((item) => {
-    if (!claimedPending.has(item._id)) merged.set(item._id, item);
+    if (!claimedPending.has(item._id)) {
+      merged.set(item._id, item);
+      hasChanges = true;
+    }
   });
+
+  if (!hasChanges && merged.size === serverMessages.length) {
+    return serverMessages;
+  }
 
   return sortMessages([...merged.values()]);
 };
 
 /** Replace optimistic message in-place without dropping the rest of the thread. */
 export const reconcileSentMessage = (current, tempId, serverMessage) => {
-  const withoutTemp = current.filter((item) => item._id !== tempId);
-  const idx = withoutTemp.findIndex((item) => item._id === serverMessage._id);
+  const filtered = current.filter((item) => item._id !== tempId);
+  const serverIdx = filtered.findIndex((item) => item._id === serverMessage._id);
   const merged = { ...serverMessage, localKey: tempId, pending: false };
-  if (idx >= 0) {
-    const next = [...withoutTemp];
-    next[idx] = merged;
-    return sortMessages(next);
+  
+  if (serverIdx >= 0) {
+    const next = [...filtered];
+    next[serverIdx] = merged;
+    return next;
   }
-  return sortMessages([...withoutTemp, merged]);
+  
+  return sortMessages([...filtered, merged]);
 };
 
 const typingUserCache = new Map();

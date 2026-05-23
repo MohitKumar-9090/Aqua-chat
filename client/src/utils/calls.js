@@ -136,9 +136,21 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   };
 
   const remoteStream = new MediaStream();
+  let emitScheduled = false;
 
   const emitRemote = () => {
-    if (remoteStream.getTracks().length) onRemoteTrack(remoteStream);
+    if (remoteStream.getTracks().length) {
+      onRemoteTrack(remoteStream);
+    }
+  };
+
+  const scheduleEmit = () => {
+    if (emitScheduled) return;
+    emitScheduled = true;
+    Promise.resolve().then(() => {
+      emitScheduled = false;
+      emitRemote();
+    });
   };
 
   pc.ontrack = (event) => {
@@ -150,7 +162,7 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
     } else if (event.track && !remoteStream.getTracks().some((track) => track.id === event.track.id)) {
       remoteStream.addTrack(event.track);
     }
-    emitRemote();
+    scheduleEmit();
   };
 
   pc.onicecandidate = (event) => {
