@@ -3,23 +3,30 @@ import ReactDOM from 'react-dom/client';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import './index.css';
 import { captureInstallPrompt, registerServiceWorker } from './pwa.js';
+import { scheduleIdle } from './utils/scheduleIdle.js';
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('beforeinstallprompt', captureInstallPrompt);
+  window.addEventListener('beforeinstallprompt', captureInstallPrompt, { passive: false });
+
+  scheduleIdle(() => {
+    registerServiceWorker();
+  }, { timeout: 1200 });
 }
 
-registerServiceWorker().catch(console.error);
-
 const App = lazy(() => import('./App.jsx'));
+
+function AppLoader() {
+  return (
+    <main className="grid min-h-dvh place-items-center">
+      <div className="h-16 w-16 animate-spin rounded-full border-4 border-aqua-100 border-t-aqua-500" />
+    </main>
+  );
+}
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <Suspense fallback={
-        <main className="grid min-h-dvh place-items-center">
-          <div className="h-16 w-16 animate-spin rounded-full border-4 border-aqua-100 border-t-aqua-500" />
-        </main>
-      }>
+      <Suspense fallback={<AppLoader />}>
         <App />
       </Suspense>
     </ErrorBoundary>

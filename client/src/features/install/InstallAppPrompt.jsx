@@ -5,6 +5,7 @@ import { requestNotificationPermission } from '../../pwa.js';
 export default function InstallAppPrompt({
   canInstall,
   isIos,
+  isDesktopChromium,
   installInstructions,
   onInstall,
   onClose
@@ -41,6 +42,11 @@ export default function InstallAppPrompt({
             <div className="mt-3 flex items-center gap-2 rounded-2xl bg-aqua-50 px-3 py-2 text-xs font-semibold text-cyan-900">
               <Share size={14} className="shrink-0" />
               Safari: Share → Add to Home Screen
+            </div>
+          )}
+          {isDesktopChromium && !canInstall && (
+            <div className="mt-3 rounded-2xl bg-aqua-50 px-3 py-2 text-xs font-semibold leading-5 text-cyan-900">
+              Chrome: click the install icon in the address bar, or open the menu (⋮) → Install AquaChat.
             </div>
           )}
 

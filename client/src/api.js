@@ -19,6 +19,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage';
+import { onAuthStateChanged } from 'firebase/auth';
 import { onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
 import { auth, firestore, realtimeDb, storage } from './firebase.js';
 
@@ -110,11 +111,21 @@ const directChatId = (a, b) => `direct_${[a, b].sort().join('_')}`;
 
 const normalizeLastSeen = (value) => {
   if (value == null || value === '') return '';
-  if (typeof value === 'number') return new Date(value).toISOString();
-  if (typeof value === 'object' && typeof value.seconds === 'number') {
-    return new Date(value.seconds * 1000).toISOString();
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const ms = value < 1e12 ? value * 1000 : value;
+    return new Date(ms).toISOString();
   }
-  return String(value);
+  if (typeof value === 'object') {
+    if (typeof value.seconds === 'number') {
+      return new Date(value.seconds * 1000).toISOString();
+    }
+    if (typeof value._seconds === 'number') {
+      return new Date(value._seconds * 1000).toISOString();
+    }
+    if (value['.sv'] === 'timestamp') return '';
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isNaN(parsed) ? '' : new Date(parsed).toISOString();
 };
 
 export const normalizePresenceMap = (presence = {}) => {
@@ -132,16 +143,36 @@ export const normalizePresenceMap = (presence = {}) => {
 };
 
 export const subscribePresence = (handler) => {
-  if (!realtimeDb) {
+  if (!realtimeDb || !auth) {
     console.warn('Realtime Database is not configured.');
     return () => {};
   }
-  const presenceRef = dbRef(realtimeDb, 'presence');
-  return onValue(
-    presenceRef,
-    (snap) => handler(normalizePresenceMap(snap.val() || {})),
-    (error) => console.error('Presence listener error:', error)
-  );
+
+  let presenceUnsubscribe = null;
+
+  const attachPresenceListener = () => {
+    presenceUnsubscribe?.();
+    presenceUnsubscribe = onValue(
+      dbRef(realtimeDb, 'presence'),
+      (snap) => handler(normalizePresenceMap(snap.val() || {})),
+      (error) => console.error('Presence listener error:', error?.message || error)
+    );
+  };
+
+  const authUnsubscribe = onAuthStateChanged(auth, (user) => {
+    presenceUnsubscribe?.();
+    presenceUnsubscribe = null;
+    if (!user?.uid) {
+      handler({});
+      return;
+    }
+    attachPresenceListener();
+  });
+
+  return () => {
+    authUnsubscribe();
+    presenceUnsubscribe?.();
+  };
 };
 
 /** @deprecated Use startPresenceSession from services/presence.js */
@@ -364,18 +395,18 @@ export const api = {
       const q = query(collection(firestore, 'users'), where('searchableKeywords', 'array-contains', phone || clean), limit(40));
       snaps = (await getDocs(q)).docs;
     } else {
-      const q = query(collection(firestore, 'users'), limit(80));
+      const q = query(collection(firestore, 'users'), limit(40));
       snaps = (await getDocs(q)).docs;
     }
 
     const [mySnap, chatsSnap, allDocsSource] = await Promise.all([
       getDoc(doc(firestore, 'users', uid)),
       getDocs(query(collection(firestore, 'chats'), where('participantIds', 'array-contains', uid))),
-      clean && snaps.length < 10 ? getDocs(query(collection(firestore, 'users'), limit(120))) : Promise.resolve(null)
+      clean && snaps.length < 10 ? getDocs(query(collection(firestore, 'users'), limit(60))) : Promise.resolve(null)
     ]);
 
     const allDocs = allDocsSource?.docs || snaps;
-    const totalSnap = await getDocs(query(collection(firestore, 'users'), limit(120)));
+    const totalSnap = await getDocs(query(collection(firestore, 'users'), limit(60)));
     const totalUsers = totalSnap.docs.filter((snap) => snap.id !== uid).length;
     const connectedIds = new Set(mySnap.data()?.connections || []);
     chatsSnap.docs.forEach((chatDoc) => {

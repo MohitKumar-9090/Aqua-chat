@@ -1,8 +1,8 @@
 {
   "rules": {
     "presence": {
+      ".read": "auth != null",
       "$uid": {
-        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
@@ -19,8 +19,8 @@
         ".read": "auth != null && auth.uid === $uid",
         "$callId": {
           ".write": "auth != null && (
-            (auth.uid === $uid && !newData.exists()) ||
-            (!data.exists() && root.child('calls').child($callId).child('from').val() === auth.uid && root.child('calls').child($callId).child('to').val() === $uid)
+            auth.uid === $uid ||
+            (!data.exists() && root.child('calls').child($callId).child('from').val() === auth.uid)
           )"
         }
       }
@@ -43,16 +43,17 @@
         )",
         "candidates": {
           ".read": "auth != null && (
+            !root.child('calls').child($callId).exists() ||
             root.child('calls').child($callId).child('from').val() === auth.uid ||
             root.child('calls').child($callId).child('to').val() === auth.uid ||
             root.child('calls').child($callId).child('participants').child(auth.uid).exists()
           )",
           "$uid": {
             ".write": "auth != null && auth.uid === $uid && (
+              !root.child('calls').child($callId).exists() ||
               root.child('calls').child($callId).child('from').val() === auth.uid ||
               root.child('calls').child($callId).child('to').val() === auth.uid ||
-              root.child('calls').child($callId).child('participants').child(auth.uid).exists() ||
-              !root.child('calls').child($callId).exists()
+              root.child('calls').child($callId).child('participants').child(auth.uid).exists()
             )"
           }
         }

@@ -6,29 +6,32 @@ export default defineConfig({
   plugins: [react()],
   build: {
     minify: 'esbuild',
-    // Enable code splitting for better caching
+    target: 'es2020',
+    cssCodeSplit: true,
+    sourcemap: false,
+    modulePreload: { polyfill: false },
     rollupOptions: {
       output: {
-        manualChunks: {
-          'firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/database', 'firebase/storage'],
-          'icons': ['lucide-react'],
-          'vendor': ['react', 'react-dom']
+        manualChunks(id) {
+          if (!id.includes('node_modules')) {
+            if (id.includes('/src/utils/calls.js') || id.includes('/src/utils/iceServers.js')) {
+              return 'calls';
+            }
+            if (id.includes('/src/features/chat/ChatPanel')) return 'chat';
+            return undefined;
+          }
+          if (id.includes('firebase/auth')) return 'firebase-auth';
+          if (id.includes('firebase/firestore')) return 'firebase-firestore';
+          if (id.includes('firebase/database')) return 'firebase-rtdb';
+          if (id.includes('firebase/storage')) return 'firebase-storage';
+          if (id.includes('firebase')) return 'firebase-core';
+          if (id.includes('lucide-react')) return 'icons';
+          if (id.includes('react-dom') || id.includes('react/')) return 'vendor';
         }
       }
-    },
-    // Source maps only in non-production
-    sourcemap: false,
-    // Target modern browsers
-    target: 'esnext',
-    // Optimize CSS
-    cssCodeSplit: true,
-  },
-  server: {
-    // Enable gzip compression in dev
-    middlewareMode: false,
+    }
   },
   preview: {
-    // Enable compression for preview
     proxy: {
       '/api': {
         target: process.env.VITE_API_URL || 'http://localhost:3000',
@@ -36,9 +39,5 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, '')
       }
     }
-  },
-  // Performance hints
-  define: {
-    __DEV__: process.env.NODE_ENV !== 'production',
   }
 });

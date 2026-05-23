@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Home, LogOut, Search, Settings, Users, WifiOff } from 'lucide-react';
-import AuthScreen from './components/AuthScreen.jsx';
 import EmailVerificationPanel from './components/auth/EmailVerificationPanel.jsx';
 import Avatar from './components/Avatar.jsx';
 import LoadingSpinner from './components/LoadingSpinner.jsx';
@@ -12,31 +11,22 @@ import { useAuth } from './hooks/useAuth.js';
 import { registerBackgroundSync, requestNotificationPermission } from './pwa.js';
 import { usePwaInstall } from './hooks/usePwaInstall.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
-import {
-  createCallRoom,
-  createPeerConnection,
-  endCallRoom,
-  publishCallOffer,
-  pushIceCandidate,
-  ringCallee,
-  sendCallAnswer,
-  subscribeCallRoom,
-  subscribeIceCandidates,
-  subscribeIncomingCalls
-} from './utils/calls.js';
-import { prefetchIceServers } from './utils/iceServers.js';
+import { getCallRuntime } from './utils/callRuntime.js';
 import { getCallMediaStream } from './utils/media.js';
+import { scheduleIdle } from './utils/scheduleIdle.js';
 import { auth } from './firebase.js';
 import { chatImage, chatTitle, directPeer, formatTime, statusText } from './utils/chat.js';
-import InstallAppPrompt from './features/install/InstallAppPrompt.jsx';
 import EmptyState from './features/chat/EmptyState.jsx';
 import PeopleSearchRow from './features/people/PeopleSearchRow.jsx';
-import StatusTray from './features/status/StatusTray.jsx';
-import ChatPanel from './features/chat/ChatPanel.jsx';
-import GroupModal from './features/settings/GroupModal.jsx';
-import GroupStrip from './features/chat/GroupStrip.jsx';
-import ProfileSettings from './features/settings/ProfileSettings.jsx';
-import CallModal from './features/calls/CallModal.jsx';
+
+const AuthScreen = lazy(() => import('./components/AuthScreen.jsx'));
+const InstallAppPrompt = lazy(() => import('./features/install/InstallAppPrompt.jsx'));
+const StatusTray = lazy(() => import('./features/status/StatusTray.jsx'));
+const ChatPanel = lazy(() => import('./features/chat/ChatPanel.jsx'));
+const GroupModal = lazy(() => import('./features/settings/GroupModal.jsx'));
+const GroupStrip = lazy(() => import('./features/chat/GroupStrip.jsx'));
+const ProfileSettings = lazy(() => import('./features/settings/ProfileSettings.jsx'));
+const CallModal = lazy(() => import('./features/calls/CallModal.jsx'));
 
 export default function App() {
   if (initError) {
@@ -94,7 +84,9 @@ export default function App() {
 
   if (!authState.firebaseUser) return (
     <>
-      <AuthScreen />
+      <Suspense fallback={<LoadingSpinner />}>
+        <AuthScreen />
+      </Suspense>
       <ToastContainer />
     </>
   );
@@ -120,7 +112,9 @@ export default function App() {
 
   return (
     <>
-      <ChatShell {...authState} />
+      <Suspense fallback={<LoadingSpinner />}>
+        <ChatShell {...authState} />
+      </Suspense>
       <ToastContainer />
     </>
   );
@@ -146,8 +140,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [connectingUserId, setConnectingUserId] = useState(null);
   const {
     canInstall,
+    showInstallButton,
     isStandalone,
     isIos,
+    isDesktopChromium,
     showPrompt: showInstall,
     installInstructions,
     install: installApp,
@@ -194,13 +190,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setSelectedChat(chatList[0]);
   };
 
+  const refreshStatuses = async () => {
+    const { statuses: next } = await api.statuses();
+    setStatuses(next);
+  };
+
   const refresh = async () => {
-    const [chatData, statusData, userData] = await Promise.all([api.chats(), api.statuses(), api.users(query)]);
-    setChats(applyPresenceToChats(chatData.chats, presenceRef.current));
-    setStatuses(statusData.statuses);
-    setUsers(userData.users || []);
-    setTotalUsers(userData.totalUsers || 0);
-    maybeAutoSelectChat(chatData.chats);
+    if (panel === 'people' || query.trim()) {
+      await loadUsers(query);
+    }
+    await refreshStatuses();
   };
 
   const closeChat = () => {
@@ -210,19 +209,24 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   useEffect(() => {
-    refresh().catch(console.error);
-    prefetchIceServers();
+    const cancel = scheduleIdle(() => {
+      refreshStatuses().catch(console.error);
+    });
+    return cancel;
   }, []);
 
   const presenceRef = useRef({});
 
   const mergePresence = (user, presence) => {
     const live = presence[user._id];
-    if (!live) return { ...user, isOnline: false, online: false };
+    if (!live) {
+      return { ...user, isOnline: false, online: false };
+    }
+    const isOnline = Boolean(live.isOnline ?? live.online);
     return {
       ...user,
-      isOnline: live.isOnline,
-      online: live.online,
+      isOnline,
+      online: isOnline,
       lastSeen: live.lastSeen || user.lastSeen
     };
   };
@@ -254,7 +258,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       unsubscribePresence?.();
       unsubscribeChats?.();
     };
-  }, [isMobile]);
+  }, [profile?._id]);
 
   useEffect(() => {
     const online = () => setIsOnline(true);
@@ -269,33 +273,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    const searchText = query.trim();
-    setUsersLoading(true);
-    setUsersError('');
+    if (panel !== 'people' && !query.trim()) return undefined;
 
+    let cancelled = false;
     const timeout = setTimeout(() => {
-      api.users(searchText)
-        .then((data) => {
-          if (cancelled) return;
-          setUsers(data.users || []);
-          setTotalUsers(data.totalUsers || 0);
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          setUsers([]);
-          setUsersError(error.message || 'Could not search users.');
-        })
-        .finally(() => {
-          if (!cancelled) setUsersLoading(false);
-        });
+      loadUsers(query).finally(() => {
+        if (cancelled) setUsersLoading(false);
+      });
     }, 220);
 
     return () => {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [query]);
+  }, [panel, query]);
 
   useEffect(() => {
     if (!selectedChat) {
@@ -471,21 +462,31 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null }) => {
-    const uid = signalingUid();
+    const calls = await getCallRuntime();
+    const uid = await calls.waitForAuthReady();
     setCallState((current) => ({ ...current, preparing: true }));
+
+    let iceReady = isCaller;
 
     try {
       if (isCaller) {
-        await createCallRoom({ callId, from: uid, to: remoteUid, callType });
+        await calls.createCallRoom({ callId, from: uid, to: remoteUid, callType });
+      } else {
+        await calls.verifyCallAccess(callId, uid);
       }
 
       const [stream, pc] = await Promise.all([
         getCallMediaStream(callType),
-        createPeerConnection(
+        calls.createPeerConnection(
           (remoteStream) => {
             if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
           },
-          (candidate) => pushIceCandidate(callId, uid, candidate).catch(console.error)
+          (candidate) => {
+            if (!iceReady) return;
+            calls.pushIceCandidate(callId, uid, candidate).catch((error) => {
+              console.error('[Call] ICE write failed:', error.message);
+            });
+          }
         )
       ]);
 
@@ -493,7 +494,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       peerConnectionRef.current = pc;
 
-      const roomListener = subscribeCallRoom(callId, async (room) => {
+      const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room || !peerConnectionRef.current) return;
         if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
@@ -503,23 +504,31 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       });
       callUnsubscribersRef.current.push(roomListener);
 
-      const remoteCandidates = subscribeIceCandidates(callId, remoteUid, (candidate) => {
-        if (!candidate || !peerConnectionRef.current) return;
-        peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
-      });
-      callUnsubscribersRef.current.push(remoteCandidates);
-
       if (isCaller) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        await publishCallOffer(callId, offer);
-        await ringCallee({ callId, from: uid, to: remoteUid, callType });
+        await calls.publishCallOffer(callId, offer);
+        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType });
+        iceReady = true;
+
+        const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
+          if (!candidate || !peerConnectionRef.current) return;
+          peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
+        });
+        callUnsubscribersRef.current.push(remoteCandidates);
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        await sendCallAnswer(callId, uid, answer);
+        await calls.sendCallAnswer(callId, uid, answer);
+        iceReady = true;
+
+        const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
+          if (!candidate || !peerConnectionRef.current) return;
+          peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
+        });
+        callUnsubscribersRef.current.push(remoteCandidates);
       }
     } finally {
       setCallState((current) => (current ? { ...current, preparing: false } : current));
@@ -528,7 +537,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const startCall = async (callType) => {
     if (!selectedPeer || callState?.active) return;
-    const uid = signalingUid();
+    const calls = await getCallRuntime();
+    const uid = await calls.waitForAuthReady();
     const callId = `call_${[uid, selectedPeer._id].sort().join('_')}_${Date.now()}`;
     setActiveCallId(callId);
     setCallState({
@@ -552,12 +562,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const answerCall = async () => {
     if (!callState?.callId || !callState?.offer) return;
-    const uid = auth?.currentUser?.uid || profile?._id;
-    if (callState.to && uid && callState.to !== uid) {
-      toastError('This call is for another account. Sign in with the correct user and try again.');
-      return;
-    }
     try {
+      const calls = await getCallRuntime();
+      const uid = await calls.waitForAuthReady();
+      if (callState.to && uid && callState.to !== uid) {
+        toastError('This call is for another account. Sign in with the correct user and try again.');
+        return;
+      }
       await setupPeer({
         callId: callState.callId,
         remoteUid: callState.from,
@@ -582,7 +593,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     peerConnectionRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
-    if (endingCallId && to) endCallRoom(endingCallId, from, to).catch(console.error);
+    if (endingCallId && to) {
+      getCallRuntime().then((calls) => calls.endCallRoom(endingCallId, from, to)).catch(console.error);
+    }
     setActiveCallId(null);
     setCallState(null);
   };
@@ -590,22 +603,25 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   useEffect(() => {
     const uid = auth?.currentUser?.uid || profile?._id;
     if (!uid) return undefined;
-    const unsubscribe = subscribeIncomingCalls(uid, async (incoming) => {
-      if (!incoming || callStateRef.current?.active) return;
-      const caller = users.find((user) => user._id === incoming.from) || { _id: incoming.from, displayName: 'Incoming call' };
-      setActiveCallId(incoming.id);
-      setCallState({
-        active: true,
-        incoming: true,
-        callId: incoming.id,
-        callType: incoming.callType || 'voice',
-        caller,
-        from: incoming.from,
-        to: incoming.to,
-        offer: incoming.offer
+    let unsubscribe = () => {};
+    getCallRuntime().then((calls) => {
+      unsubscribe = calls.subscribeIncomingCalls(uid, async (incoming) => {
+        if (!incoming || callStateRef.current?.active) return;
+        const caller = users.find((user) => user._id === incoming.from) || { _id: incoming.from, displayName: 'Incoming call' };
+        setActiveCallId(incoming.id);
+        setCallState({
+          active: true,
+          incoming: true,
+          callId: incoming.id,
+          callType: incoming.callType || 'voice',
+          caller,
+          from: incoming.from,
+          to: incoming.to,
+          offer: incoming.offer
+        });
       });
     });
-    return unsubscribe;
+    return () => unsubscribe();
   }, [profile?._id, users]);
 
   return (
@@ -631,11 +647,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
               </div>
             </div>
             <div className="flex items-center gap-1">
-              {!isStandalone && (
+              {showInstallButton && (
                 <button
                   onClick={() => (canInstall ? handleInstall() : openInstallPrompt())}
-                  className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700"
-                  title={canInstall ? 'Install AquaChat' : 'Add to Home Screen'}
+                  className={`rounded-2xl p-2.5 transition duration-200 ${
+                    canInstall
+                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-200/60 hover:bg-cyan-600'
+                      : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'
+                  }`}
+                  title={canInstall ? 'Install AquaChat' : installInstructions}
                 >
                   <Download size={18} />
                 </button>
@@ -661,7 +681,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           </div>
 
           {/* Status Tray */}
-          <StatusTray statuses={statuses} onCreate={createStatus} me={profile} />
+          <Suspense fallback={<div className="h-20 animate-pulse bg-aqua-50/40" />}>
+            <StatusTray statuses={statuses} onCreate={createStatus} me={profile} />
+          </Suspense>
 
           {/* Tab Buttons */}
           <div className="hidden gap-2 border-b border-aqua-100/40 px-3 py-3 sm:flex">
@@ -750,21 +772,23 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         <section className={`${selectedChat || !isMobile ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}>
           {selectedChat ? (
             <>
-              <ChatPanel
-                chat={selectedChat}
-                me={profile}
-                messages={messages}
-                typing={typing}
-                isMobile={isMobile}
-                onBack={closeChat}
-                onAudio={() => startCall('voice')}
-                onVideo={() => startCall('video')}
-                onSend={sendPayload}
-                onUpload={(file, options) => api.upload(file, options)}
-                onDeleteForMe={api.deleteMessageForMe}
-                onDeleteForEveryone={api.deleteMessageForEveryone}
-                onBulkDeleteForMe={api.deleteMessagesForMe}
-              />
+              <Suspense fallback={<div className="min-h-0 flex-1 animate-pulse bg-aqua-50/30" />}>
+                <ChatPanel
+                  chat={selectedChat}
+                  me={profile}
+                  messages={messages}
+                  typing={typing}
+                  isMobile={isMobile}
+                  onBack={closeChat}
+                  onAudio={() => startCall('voice')}
+                  onVideo={() => startCall('video')}
+                  onSend={sendPayload}
+                  onUpload={(file, options) => api.upload(file, options)}
+                  onDeleteForMe={api.deleteMessageForMe}
+                  onDeleteForEveryone={api.deleteMessageForEveryone}
+                  onBulkDeleteForMe={api.deleteMessagesForMe}
+                />
+              </Suspense>
               {selectedChat.type === 'group' && <GroupStrip chat={selectedChat} me={profile} users={users} onRefresh={refresh} />}
             </>
           ) : (
@@ -788,17 +812,32 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </button>
       </nav>
 
-      {groupOpen && <GroupModal users={users} onClose={() => setGroupOpen(false)} onCreated={(chat) => { setChats((current) => [chat, ...current]); setSelectedChat(chat); setGroupOpen(false); }} />}
-      {settingsOpen && <ProfileSettings firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} onClose={() => setSettingsOpen(false)} />}
-      {callState?.active && <CallModal state={callState} localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} onAnswer={answerCall} onEnd={endCall} />}
-      {showInstall && !isStandalone && (
-        <InstallAppPrompt
-          canInstall={canInstall}
-          isIos={isIos}
-          installInstructions={installInstructions}
-          onInstall={handleInstall}
-          onClose={dismissInstallPrompt}
-        />
+      {groupOpen && (
+        <Suspense fallback={null}>
+          <GroupModal users={users} onClose={() => setGroupOpen(false)} onCreated={(chat) => { setChats((current) => [chat, ...current]); setSelectedChat(chat); setGroupOpen(false); }} />
+        </Suspense>
+      )}
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <ProfileSettings firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} onClose={() => setSettingsOpen(false)} />
+        </Suspense>
+      )}
+      {callState?.active && (
+        <Suspense fallback={null}>
+          <CallModal state={callState} localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} onAnswer={answerCall} onEnd={endCall} />
+        </Suspense>
+      )}
+      {showInstall && (
+        <Suspense fallback={null}>
+          <InstallAppPrompt
+            canInstall={canInstall}
+            isIos={isIos}
+            isDesktopChromium={isDesktopChromium}
+            installInstructions={installInstructions}
+            onInstall={handleInstall}
+            onClose={dismissInstallPrompt}
+          />
+        </Suspense>
       )}
     </main>
   );

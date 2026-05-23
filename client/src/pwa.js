@@ -47,42 +47,55 @@ export const isPwaDisplayMode = () =>
   window.matchMedia('(display-mode: fullscreen)').matches ||
   window.navigator.standalone === true;
 
-export const registerServiceWorker = async () => {
+let swRegistrationPromise = null;
+
+export const registerServiceWorker = () => {
   if (!isProd) {
-    const registrations = await navigator.serviceWorker?.getRegistrations?.();
-    registrations?.forEach((registration) => registration.unregister());
-    return null;
+    swRegistrationPromise = navigator.serviceWorker?.getRegistrations?.().then((regs) => {
+      regs?.forEach((registration) => registration.unregister());
+      return null;
+    });
+    return swRegistrationPromise;
   }
 
-  if (!('serviceWorker' in navigator)) return null;
+  if (!('serviceWorker' in navigator)) {
+    swRegistrationPromise = Promise.resolve(null);
+    return swRegistrationPromise;
+  }
 
-  try {
-    const registration = await navigator.serviceWorker.register('/sw.js', {
-      scope: '/',
-      updateViaCache: 'none'
-    });
-
-    if (registration.waiting) {
-      registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-    }
-
-    registration.addEventListener('updatefound', () => {
-      const worker = registration.installing;
-      if (!worker) return;
-      worker.addEventListener('statechange', () => {
-        if (worker.state === 'installed' && navigator.serviceWorker.controller) {
-          worker.postMessage({ type: 'SKIP_WAITING' });
-        }
+  if (!swRegistrationPromise) {
+    swRegistrationPromise = navigator.serviceWorker
+      .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+      .then((registration) => {
+        registration.update().catch(() => {});
+        return registration;
+      })
+      .catch((error) => {
+        console.error(`Service worker registration failed: ${error.message}`);
+        swRegistrationPromise = null;
+        return null;
       });
-    });
+  }
 
-    await navigator.serviceWorker.ready;
-    registration.update().catch(() => {});
-    return registration;
-  } catch (error) {
-    console.error(`Service worker registration failed: ${error.message}`);
+  return swRegistrationPromise;
+};
+
+export const waitForServiceWorker = async () => {
+  if (!isProd || !('serviceWorker' in navigator)) return null;
+  registerServiceWorker();
+  try {
+    return await navigator.serviceWorker.ready;
+  } catch {
     return null;
   }
+};
+
+export const hasActiveServiceWorker = () =>
+  Boolean(isProd && 'serviceWorker' in navigator && navigator.serviceWorker?.controller);
+
+export const isDesktopChromium = () => {
+  const ua = navigator.userAgent || '';
+  return /Chrome|Edg|Chromium/i.test(ua) && !/Mobile|Android|iPhone|iPad/i.test(ua);
 };
 
 export const requestNotificationPermission = async () => {

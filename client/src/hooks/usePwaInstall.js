@@ -2,11 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   clearDeferredInstallPrompt,
   getInstallInstructions,
+  hasActiveServiceWorker,
+  isDesktopChromium,
   isIos,
   isPwaDisplayMode,
   isSecureContext,
   promptInstall,
-  subscribeInstallPrompt
+  subscribeInstallPrompt,
+  waitForServiceWorker
 } from '../pwa.js';
 
 const INSTALL_DISMISS_KEY = 'aquachat_install_dismissed_at';
@@ -24,6 +27,7 @@ const wasDismissedRecently = () => {
 export const usePwaInstall = () => {
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isStandalone, setIsStandalone] = useState(isPwaDisplayMode);
+  const [swReady, setSwReady] = useState(hasActiveServiceWorker);
   const [showPrompt, setShowPrompt] = useState(false);
 
   useEffect(() => {
@@ -33,9 +37,7 @@ export const usePwaInstall = () => {
 
     const unsubscribe = subscribeInstallPrompt((event) => {
       setDeferredPrompt(event);
-      if (event && !isPwaDisplayMode()) {
-        setShowPrompt(true);
-      }
+      if (event && !isPwaDisplayMode()) setShowPrompt(true);
     });
 
     const onInstalled = () => {
@@ -47,11 +49,15 @@ export const usePwaInstall = () => {
 
     window.addEventListener('appinstalled', onInstalled);
 
+    waitForServiceWorker().then(() => {
+      setSwReady(hasActiveServiceWorker());
+    });
+
     const timer = window.setTimeout(() => {
       if (!isPwaDisplayMode() && isSecureContext() && !wasDismissedRecently()) {
         setShowPrompt(true);
       }
-    }, 2000);
+    }, 3500);
 
     return () => {
       media.removeEventListener?.('change', onDisplayChange);
@@ -77,20 +83,31 @@ export const usePwaInstall = () => {
       setShowPrompt(false);
       return choice;
     }
-    dismissPrompt();
     return { outcome: 'manual', instructions: getInstallInstructions() };
-  }, [deferredPrompt, dismissPrompt]);
+  }, [deferredPrompt]);
 
   const openPrompt = useCallback(() => {
     if (!isStandalone) setShowPrompt(true);
   }, [isStandalone]);
 
+  const canInstall = Boolean(deferredPrompt);
+  const showInstallButton = !isStandalone && isSecureContext();
+  const installHint =
+    canInstall
+      ? 'Install AquaChat as a desktop app'
+      : isDesktopChromium()
+        ? 'Install via Chrome menu (⋮) → Install AquaChat, or look for the install icon in the address bar'
+        : getInstallInstructions();
+
   return {
-    canInstall: Boolean(deferredPrompt),
+    canInstall,
+    showInstallButton,
+    swReady,
     isStandalone,
     isIos: isIos(),
+    isDesktopChromium: isDesktopChromium(),
     showPrompt: showPrompt && !isStandalone,
-    installInstructions: getInstallInstructions(),
+    installInstructions: installHint,
     install,
     dismissPrompt,
     openPrompt,

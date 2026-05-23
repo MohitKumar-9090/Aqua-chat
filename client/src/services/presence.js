@@ -1,51 +1,82 @@
+import { onAuthStateChanged } from 'firebase/auth';
 import { onDisconnect, onValue, ref as dbRef, serverTimestamp, set } from 'firebase/database';
-import { realtimeDb } from '../firebase.js';
+import { auth, realtimeDb } from '../firebase.js';
 
 const connectedRef = () => dbRef(realtimeDb, '.info/connected');
 const presenceRef = (uid) => dbRef(realtimeDb, `presence/${uid}`);
 
 let activeUid = null;
 let connectedUnsubscribe = null;
+let authReadyUnsubscribe = null;
 
 const offlinePayload = () => ({
   online: false,
-  isOnline: false,
   lastSeen: serverTimestamp()
 });
 
 const onlinePayload = () => ({
   online: true,
-  isOnline: true,
   lastSeen: serverTimestamp()
 });
 
+const assertAuthUid = (uid) => {
+  const authUid = auth?.currentUser?.uid;
+  if (!authUid) throw new Error('Auth not ready for presence.');
+  if (authUid !== uid) throw new Error('Presence uid must match signed-in user.');
+  return authUid;
+};
+
+const markOnline = async (uid) => {
+  const ref = presenceRef(uid);
+  await onDisconnect(ref).set(offlinePayload());
+  await set(ref, onlinePayload());
+};
+
 /**
- * Firebase RTDB presence (https://firebase.google.com/docs/firestore/solutions/presence)
- * Waits for `.info/connected` before writing and registering onDisconnect.
+ * Firebase RTDB presence: .info/connected → onDisconnect(offline) → set(online).
+ * https://firebase.google.com/docs/firestore/solutions/presence
  */
 export const startPresenceSession = (uid) => {
   if (!realtimeDb || !uid) return () => {};
 
+  if (activeUid === uid && connectedUnsubscribe) {
+    return () => stopPresenceSession(uid);
+  }
+
   if (activeUid && activeUid !== uid) {
     stopPresenceSession(activeUid);
   }
+
   activeUid = uid;
-
   connectedUnsubscribe?.();
-  connectedUnsubscribe = onValue(connectedRef(), (snap) => {
-    if (snap.val() !== true) return;
+  authReadyUnsubscribe?.();
 
-    const ref = presenceRef(uid);
-    set(ref, onlinePayload()).catch((error) => {
-      console.error('Presence online write failed:', error);
-    });
+  const beginConnectedListener = () => {
+    connectedUnsubscribe = onValue(connectedRef(), (snap) => {
+      if (snap.val() !== true) return;
 
-    onDisconnect(ref)
-      .set(offlinePayload())
-      .catch((error) => {
-        console.error('Presence onDisconnect registration failed:', error);
+      try {
+        assertAuthUid(uid);
+      } catch {
+        return;
+      }
+
+      markOnline(uid).catch((error) => {
+        console.error('Presence online setup failed:', error?.message || error);
       });
-  });
+    });
+  };
+
+  if (auth?.currentUser?.uid === uid) {
+    beginConnectedListener();
+  } else {
+    authReadyUnsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user?.uid !== uid) return;
+      authReadyUnsubscribe?.();
+      authReadyUnsubscribe = null;
+      beginConnectedListener();
+    });
+  }
 
   return () => stopPresenceSession(uid);
 };
@@ -54,10 +85,20 @@ export const startPresenceSession = (uid) => {
 export const stopPresenceSession = async (uid) => {
   connectedUnsubscribe?.();
   connectedUnsubscribe = null;
+  authReadyUnsubscribe?.();
+  authReadyUnsubscribe = null;
 
   if (uid && realtimeDb) {
+    const ref = presenceRef(uid);
     try {
-      await set(presenceRef(uid), offlinePayload());
+      await onDisconnect(ref).cancel();
+    } catch {
+      // No onDisconnect registered yet.
+    }
+    try {
+      if (auth?.currentUser?.uid === uid) {
+        await set(ref, offlinePayload());
+      }
     } catch (error) {
       console.error('Presence offline write failed:', error);
     }
@@ -66,13 +107,14 @@ export const stopPresenceSession = async (uid) => {
   if (activeUid === uid) activeUid = null;
 };
 
-/** Heartbeat while app is focused (updates lastSeen, keeps online). */
+/** Refresh online + lastSeen when the tab becomes active again. */
 export const touchPresence = async (uid) => {
   if (!realtimeDb || !uid || activeUid !== uid) return;
   try {
+    assertAuthUid(uid);
     await set(presenceRef(uid), onlinePayload());
   } catch (error) {
-    console.error('Presence touch failed:', error);
+    console.error('Presence touch failed:', error?.message || error);
   }
 };
 

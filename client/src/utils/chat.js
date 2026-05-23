@@ -29,6 +29,7 @@ export function formatLastSeen(value) {
   const diffMs = now - date.getTime();
 
   if (diffMs < 45_000) return 'last seen just now';
+  if (diffMs < 300_000) return 'last seen recently';
   if (diffMs < 3_600_000) {
     const mins = Math.max(1, Math.floor(diffMs / 60_000));
     return `last seen ${mins} min ago`;

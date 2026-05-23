@@ -14,11 +14,13 @@ export const useAuth = () => {
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const lastUidRef = useRef(null);
-  const presenceUid = profile?._id || firebaseUser?.uid || null;
-  usePresenceSession(presenceUid);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
+
+  const presenceUid =
+    firebaseUser?.uid && !needsEmailVerification ? firebaseUser.uid : null;
+  usePresenceSession(presenceUid);
 
   // Try to restore from localStorage on mount
   useEffect(() => {
@@ -77,6 +79,15 @@ export const useAuth = () => {
       lastUidRef.current = user.uid;
 
       try {
+        const cachedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
+        if (cachedProfileRaw) {
+          const cachedProfile = JSON.parse(cachedProfileRaw);
+          if (cachedProfile._id === user.uid) {
+            setProfile(cachedProfile);
+            setLoading(false);
+          }
+        }
+
         const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
         const { user: synced } = await api.sync({
           name: pendingSignup?.name || user.displayName,

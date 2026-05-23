@@ -50,11 +50,6 @@ try {
     console.warn('Could not set persistence:', err.message);
   });
 
-  // Handle redirect result from Google Sign-In
-  getRedirectResult(auth).catch(err => {
-    console.error('Redirect result error:', err.message);
-  });
-
 } catch (error) {
   console.error('Firebase initialization failed:', error.message);
   initError = error.message;
