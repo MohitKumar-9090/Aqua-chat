@@ -153,6 +153,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callState, setCallState] = useState(null);
+  const [remoteMediaEpoch, setRemoteMediaEpoch] = useState(0);
   const [activeCallId, setActiveCallId] = useState(null);
   const [connectingUserId, setConnectingUserId] = useState(null);
   const {
@@ -362,7 +363,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     const chatId = selectedChat._id;
     activeMessagesChatRef.current = chatId;
-    setMessages([]);
     setSendEpoch(0);
     setTyping(null);
 
@@ -607,8 +607,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const uid = await calls.waitForAuthReady();
     setCallState((current) => ({ ...current, preparing: true }));
 
-    let iceReady = isCaller;
-
     try {
       if (isCaller) {
         await calls.createCallRoom({ callId, from: uid, to: remoteUid, callType });
@@ -622,10 +620,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         calls.createPeerConnection(
           (remoteStream) => {
             remoteStreamRef.current = remoteStream;
+            setRemoteMediaEpoch((n) => n + 1);
             attachRemoteMedia();
           },
           (candidate) => {
-            if (!iceReady) return;
             calls.pushIceCandidate(callId, uid, candidate).catch((error) => {
               console.error('[Call] ICE write failed:', error.message);
             });
@@ -640,11 +638,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         if (pc.connectionState === 'connected') attachRemoteMedia();
       };
 
+      const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
+        if (!candidate || !peerConnectionRef.current) return;
+        peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
+      });
+      callUnsubscribersRef.current.push(remoteCandidates);
+
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room || !peerConnectionRef.current) return;
-        if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
+        const answer = room.answer;
+        if (isCaller && answer && !peerConnectionRef.current.currentRemoteDescription) {
+          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
           await peerConnectionRef.current.flushRemoteIceCandidates();
+          setRemoteMediaEpoch((n) => n + 1);
           attachRemoteMedia();
         }
         if (room.status === 'ended') endCall();
@@ -658,29 +664,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         });
         await pc.setLocalDescription(offer);
         await calls.publishCallOffer(callId, offer);
-        iceReady = true;
-
-        const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
-          if (!candidate || !peerConnectionRef.current) return;
-          peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
-        });
-        callUnsubscribersRef.current.push(remoteCandidates);
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
+        setRemoteMediaEpoch((n) => n + 1);
+        attachRemoteMedia();
         const answer = await pc.createAnswer({
           offerToReceiveAudio: true,
           offerToReceiveVideo: callType === 'video'
         });
         await pc.setLocalDescription(answer);
         await calls.sendCallAnswer(callId, uid, answer);
-        iceReady = true;
-
-        const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
-          if (!candidate || !peerConnectionRef.current) return;
-          peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
-        });
-        callUnsubscribersRef.current.push(remoteCandidates);
       }
     } finally {
       setCallState((current) => (current ? { ...current, preparing: false } : current));
@@ -689,9 +683,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   useEffect(() => {
-    if (!callState?.active || callState?.callType !== 'video') return;
+    if (!callState?.active) return;
     attachRemoteMedia();
-  }, [callState?.active, callState?.callType, callState?.preparing, callState?.incoming]);
+  }, [callState?.active, callState?.callType, callState?.preparing, callState?.incoming, remoteMediaEpoch]);
 
   useEffect(() => {
     if (callState?.active && callState?.incoming) {
@@ -737,6 +731,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const answerCall = async () => {
     if (!callState?.callId || !callState?.offer) return;
     stopIncomingRing();
+    setCallState((current) => (current ? { ...current, incoming: false, preparing: true } : current));
     try {
       const calls = await getCallRuntime();
       const uid = await calls.waitForAuthReady();
@@ -751,7 +746,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         isCaller: false,
         remoteOffer: callState.offer
       });
-      setCallState((current) => ({ ...current, incoming: false }));
     } catch (error) {
       console.error(error);
       toastError(error.message || 'Could not answer call.');
@@ -790,7 +784,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     getCallRuntime().then((calls) => {
       if (cancelled) return;
       unsubscribe = calls.subscribeIncomingCalls(uid, (incoming) => {
-        if (!incoming) return;
+        if (!incoming) {
+          const current = callStateRef.current;
+          if (current?.incoming && !current?.preparing) {
+            stopIncomingRing();
+            setActiveCallId(null);
+            setCallState(null);
+          }
+          return;
+        }
         if (!canContactUser(blockStateRef.current, incoming.from)) return;
 
         const current = callStateRef.current;
@@ -805,6 +807,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const caller =
           usersRef.current.find((user) => user._id === incoming.from) ||
           { _id: incoming.from, displayName: 'Incoming call' };
+        playIncomingRing();
         setActiveCallId(incoming.id);
         setCallState({
           active: true,
@@ -1051,6 +1054,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             onToggleSpeaker={toggleCallSpeaker}
             onAnswer={answerCall}
             onEnd={endCall}
+            remoteMediaEpoch={remoteMediaEpoch}
           />
         </Suspense>
       )}

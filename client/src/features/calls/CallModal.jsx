@@ -14,7 +14,8 @@ export default function CallModal({
   onToggleCamera,
   onToggleSpeaker,
   onAnswer,
-  onEnd
+  onEnd,
+  remoteMediaEpoch = 0
 }) {
   const isVideo = state.callType === 'video';
   const showControls = !state.incoming || state.offer;
@@ -26,7 +27,7 @@ export default function CallModal({
     if (remote?.srcObject) remote.play().catch(() => {});
     if (local?.srcObject) local.play().catch(() => {});
     if (audio?.srcObject) audio.play().catch(() => {});
-  }, [isVideo, state.preparing, state.incoming, state.offer, localVideoRef, remoteVideoRef, remoteAudioRef]);
+  }, [isVideo, state.preparing, state.incoming, state.offer, remoteMediaEpoch, localVideoRef, remoteVideoRef, remoteAudioRef]);
 
   const controlBtn = (active, onClick, title, children) => (
     <button

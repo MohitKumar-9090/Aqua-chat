@@ -137,16 +137,20 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
 
   const remoteStream = new MediaStream();
 
+  const emitRemote = () => {
+    if (remoteStream.getTracks().length) onRemoteTrack(remoteStream);
+  };
+
   pc.ontrack = (event) => {
     const stream = event.streams?.[0];
-    if (stream) {
-      onRemoteTrack(stream);
-      return;
-    }
-    if (event.track && !remoteStream.getTracks().some((track) => track.id === event.track.id)) {
+    if (stream?.getTracks?.().length) {
+      stream.getTracks().forEach((track) => {
+        if (!remoteStream.getTracks().some((t) => t.id === track.id)) remoteStream.addTrack(track);
+      });
+    } else if (event.track && !remoteStream.getTracks().some((track) => track.id === event.track.id)) {
       remoteStream.addTrack(event.track);
     }
-    if (remoteStream.getTracks().length) onRemoteTrack(remoteStream);
+    emitRemote();
   };
 
   pc.onicecandidate = (event) => {
@@ -167,7 +171,7 @@ export const subscribeIncomingCalls = (uid, handler) => {
     watchedCallId = null;
   };
 
-  const watchCallRoom = (callId) => {
+  const watchCallRoom = (callId, ringEntry = {}) => {
     if (watchedCallId === callId && roomUnsubscribe) return;
     clearRoomWatch();
     watchedCallId = callId;
@@ -177,13 +181,27 @@ export const subscribeIncomingCalls = (uid, handler) => {
       dbRef(realtimeDb, `calls/${callId}`),
       (roomSnap) => {
         const room = roomSnap.val();
-        if (!room || room.status !== 'ringing' || room.to !== uid) {
-          logRtdb('incoming:skip', `calls/${callId}`, { status: room?.status, to: room?.to });
+        if (!room || room.to !== uid) {
           handler(null);
           return;
         }
-        logRtdb('incoming:ring', `calls/${callId}`, { hasOffer: Boolean(room.offer) });
-        handler({ id: callId, ...room });
+        if (room.status === 'ended') {
+          handler(null);
+          return;
+        }
+        if (room.status !== 'ringing' && room.status !== 'active') {
+          return;
+        }
+        logRtdb('incoming:ring', `calls/${callId}`, { hasOffer: Boolean(room.offer), status: room.status });
+        handler({
+          id: callId,
+          from: room.from || ringEntry.from,
+          to: room.to || uid,
+          callType: room.callType || ringEntry.callType || 'voice',
+          status: room.status,
+          offer: room.offer || null,
+          answer: room.answer || null
+        });
       },
       (error) => logRtdbError('onValue', `calls/${callId}`, error)
     );
@@ -200,7 +218,17 @@ export const subscribeIncomingCalls = (uid, handler) => {
         handler(null);
         return;
       }
-      watchCallRoom(callIds[callIds.length - 1]);
+      const callId = callIds[callIds.length - 1];
+      const entry = index[callId] || {};
+      handler({
+        id: callId,
+        from: entry.from,
+        to: uid,
+        callType: entry.callType || 'voice',
+        status: 'ringing',
+        offer: null
+      });
+      watchCallRoom(callId, entry);
     },
     (error) => logRtdbError('onValue', `userIncoming/${uid}`, error)
   );

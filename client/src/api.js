@@ -382,12 +382,16 @@ export const subscribeMessages = (chatId, handler) => {
   };
 };
 
-const matchesPendingMessage = (pending, server) =>
-  server.senderId === pending.senderId &&
-  server.type === pending.type &&
-  server.body === pending.body &&
-  server.mediaUrl === pending.mediaUrl &&
-  Math.abs((server.clientCreatedAt || 0) - (pending.clientCreatedAt || 0)) < 60000;
+const matchesPendingMessage = (pending, server) => {
+  if (server.senderId !== pending.senderId || server.type !== pending.type) return false;
+  if (Math.abs((server.clientCreatedAt || 0) - (pending.clientCreatedAt || 0)) >= 120000) return false;
+  if (pending.type === 'text') return (server.body || '') === (pending.body || '');
+  const bodyMatch = (server.body || '') === (pending.body || '');
+  const mediaMatch =
+    (server.mediaUrl || '') === (pending.mediaUrl || '') ||
+    (!pending.mediaUrl && Boolean(server.mediaUrl));
+  return bodyMatch && mediaMatch;
+};
 
 export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
   const pending = currentMessages.filter((item) => item.pending);
