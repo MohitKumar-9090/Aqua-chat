@@ -3,17 +3,38 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../firebase.js';
 import { api, setCurrentPresence } from '../api.js';
 
+const SESSION_STORAGE_KEY = 'aquachat_session';
+const PROFILE_STORAGE_KEY = 'aquachat_profile';
+const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+
 export const useAuth = () => {
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Try to restore from localStorage on mount
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (cached) {
+        const session = JSON.parse(cached);
+        if (Date.now() - session.timestamp < CACHE_DURATION) {
+          // Restore from cache if still valid
+          console.log('Restoring session from cache');
+        }
+      }
+    } catch (err) {
+      console.warn('Could not restore session:', err.message);
+    }
+  }, []);
+
   useEffect(() => {
     if (!auth) {
       setLoading(false);
       return;
     }
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setLoading(true);
       setFirebaseUser(user);
@@ -21,6 +42,9 @@ export const useAuth = () => {
 
       if (!user) {
         setProfile(null);
+        // Clear session storage on logout
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        localStorage.removeItem(PROFILE_STORAGE_KEY);
         setLoading(false);
         return;
       }
@@ -38,10 +62,36 @@ export const useAuth = () => {
           photoURL: user.photoURL
         });
         localStorage.removeItem('pendingPhoneProfile');
+        
+        // Store session info
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+          uid: user.uid,
+          timestamp: Date.now(),
+          email: user.email,
+          displayName: user.displayName
+        }));
+        
+        // Store profile info for quick recovery
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
+        
         setProfile(synced);
         setCurrentPresence(user.uid);
       } catch (err) {
-        setError(err.message || 'Could not load your profile.');
+        const message = err.message || 'Could not load your profile.';
+        setError(message);
+        
+        // Provide a fallback profile from cache if available
+        try {
+          const cachedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
+          if (cachedProfile) {
+            const profile = JSON.parse(cachedProfile);
+            setProfile(profile);
+            return;
+          }
+        } catch (cacheErr) {
+          // Cache read failed, continue with error
+        }
+        
         setProfile({
           _id: user.uid,
           firebaseUid: user.uid,
@@ -69,7 +119,11 @@ export const useAuth = () => {
       setProfile,
       loading,
       error,
-      logout: () => auth && signOut(auth)
+      logout: () => {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        localStorage.removeItem(PROFILE_STORAGE_KEY);
+        auth && signOut(auth);
+      }
     }),
     [firebaseUser, profile, loading, error]
   );

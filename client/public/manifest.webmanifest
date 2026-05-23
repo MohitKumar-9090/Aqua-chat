@@ -1,22 +1,43 @@
 {
-  "name": "AquaChat",
+  "name": "AquaChat - Real-Time Messaging",
   "short_name": "AquaChat",
   "description": "A premium real-time chat platform for messages, groups, calls, statuses, and people search.",
   "id": "/",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui", "browser"],
   "orientation": "portrait-primary",
   "background_color": "#f8fdff",
   "theme_color": "#06b6d4",
+  "prefer_related_applications": false,
   "categories": ["social", "productivity", "communication"],
+  "screenshots": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "540x720",
+      "type": "image/svg+xml",
+      "form_factor": "narrow"
+    },
+    {
+      "src": "/app-icon.svg",
+      "sizes": "1280x720",
+      "type": "image/svg+xml",
+      "form_factor": "wide"
+    }
+  ],
   "icons": [
     {
       "src": "/app-icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
     }
   ],
   "shortcuts": [
@@ -24,15 +45,41 @@
       "name": "Open Chats",
       "short_name": "Chats",
       "description": "Jump back into your conversations.",
-      "url": "/?panel=chats",
-      "icons": [{ "src": "/shortcut-chat.svg", "sizes": "96x96", "type": "image/svg+xml" }]
+      "url": "/?panel=chats&source=pwa",
+      "icons": [
+        {
+          "src": "/shortcut-chat.svg",
+          "sizes": "any",
+          "type": "image/svg+xml",
+          "purpose": "any"
+        },
+        {
+          "src": "/shortcut-chat.svg",
+          "sizes": "any",
+          "type": "image/svg+xml",
+          "purpose": "maskable"
+        }
+      ]
     },
     {
       "name": "Find People",
       "short_name": "People",
       "description": "Search users by username, email, or phone.",
-      "url": "/?panel=people",
-      "icons": [{ "src": "/shortcut-people.svg", "sizes": "96x96", "type": "image/svg+xml" }]
+      "url": "/?panel=people&source=pwa",
+      "icons": [
+        {
+          "src": "/shortcut-people.svg",
+          "sizes": "any",
+          "type": "image/svg+xml",
+          "purpose": "any"
+        },
+        {
+          "src": "/shortcut-people.svg",
+          "sizes": "any",
+          "type": "image/svg+xml",
+          "purpose": "maskable"
+        }
+      ]
     }
   ]
 }

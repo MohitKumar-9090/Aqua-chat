@@ -9,9 +9,14 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithPhoneNumber,
   updatePassword,
-  updateProfile
+  updateProfile,
+  setPersistence,
+  browserLocalPersistence,
+  onAuthStateChanged
 } from 'firebase/auth';
 import { firebaseConfig, validateClientEnv } from './config/env.js';
 
@@ -29,7 +34,26 @@ try {
   firestore = getFirestore(app);
   realtimeDb = getDatabase(app);
   storage = getStorage(app);
+  
+  // Configure Google Auth Provider with proper scopes
   googleProvider = new GoogleAuthProvider();
+  googleProvider.addScope('profile');
+  googleProvider.addScope('email');
+  googleProvider.setCustomParameters({
+    prompt: 'select_account', // Force account selection
+    access_type: 'offline'
+  });
+  
+  // Enable persistent login sessions
+  setPersistence(auth, browserLocalPersistence).catch(err => {
+    console.warn('Could not set persistence:', err.message);
+  });
+
+  // Handle redirect result from Google Sign-In
+  getRedirectResult(auth).catch(err => {
+    console.error('Redirect result error:', err.message);
+  });
+
 } catch (error) {
   console.error('Firebase initialization failed:', error.message);
   initError = error.message;
@@ -50,13 +74,50 @@ export const emailSignup = async ({ email, password, displayName }) => {
 
 export const changePassword = (user, password) => updatePassword(user, password);
 
-export const googleLogin = () => signInWithPopup(auth, googleProvider);
+/**
+ * Google Sign-In with popup and redirect fallback
+ * Handles popup blocked scenario by falling back to redirect
+ */
+export const googleLogin = async () => {
+  try {
+    // Try popup first
+    return await signInWithPopup(auth, googleProvider);
+  } catch (error) {
+    // Handle specific error cases
+    if (error.code === 'auth/popup-blocked' || error.code === 'auth/popup-closed-by-user') {
+      console.warn('Popup blocked or closed, attempting redirect...');
+      try {
+        // Fallback to redirect method
+        await signInWithRedirect(auth, googleProvider);
+        // The result will be handled by getRedirectResult in init
+        return { redirecting: true };
+      } catch (redirectError) {
+        throw new Error(`Google Sign-In failed: ${redirectError.message}`);
+      }
+    } else if (error.code === 'auth/cancelled-popup-request') {
+      throw new Error('Popup request cancelled. Please try again.');
+    } else if (error.code === 'auth/network-request-failed') {
+      throw new Error('Network error. Please check your internet connection.');
+    } else if (error.code === 'auth/invalid-credential') {
+      throw new Error('Invalid Google credentials. Please try again or use another method.');
+    } else {
+      throw new Error(`Sign-in failed: ${error.message}`);
+    }
+  }
+};
 
 export const createRecaptcha = () => {
   if (window.recaptchaVerifier) return window.recaptchaVerifier;
 
   window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-    size: 'invisible'
+    size: 'invisible',
+    callback: (token) => {
+      // reCAPTCHA solved
+    },
+    'expired-callback': () => {
+      // reCAPTCHA expired
+      window.recaptchaVerifier = null;
+    }
   });
 
   return window.recaptchaVerifier;
@@ -73,4 +134,13 @@ export const completePhoneLogin = async (confirmation, otp, displayName) => {
     await updateProfile(credential.user, { displayName });
   }
   return credential;
+};
+
+/**
+ * Monitor auth state with custom callback
+ * Useful for global auth state management
+ */
+export const subscribeToAuthState = (callback) => {
+  if (!auth) return () => {};
+  return onAuthStateChanged(auth, callback);
 };

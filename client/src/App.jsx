@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import AuthScreen from './components/AuthScreen.jsx';
 import Avatar from './components/Avatar.jsx';
+import ToastContainer from './components/ToastContainer.jsx';
 import { api, setTyping as setFirebaseTyping, subscribeChats, subscribeMessages, subscribePresence, subscribeTyping } from './api.js';
 import { changePassword, initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
@@ -75,15 +76,16 @@ export default function App() {
               <li>Select your project &rarr; Settings &rarr; Environment Variables</li>
               <li>Add the missing keys:</li>
               <ul className="list-disc pl-4 mt-1 font-mono text-[10px] text-slate-600">
-                <li>REACT_APP_FIREBASE_API_KEY</li>
-                <li>REACT_APP_FIREBASE_AUTH_DOMAIN</li>
-                <li>REACT_APP_FIREBASE_PROJECT_ID</li>
-                <li>REACT_APP_FIREBASE_APP_ID</li>
+                <li>VITE_FIREBASE_API_KEY</li>
+                <li>VITE_FIREBASE_AUTH_DOMAIN</li>
+                <li>VITE_FIREBASE_PROJECT_ID</li>
+                <li>VITE_FIREBASE_APP_ID</li>
               </ul>
               <li className="mt-2 text-slate-500">Redeploy your project to apply the changes</li>
             </ol>
           </div>
         </div>
+        <ToastContainer />
       </main>
     );
   }
@@ -94,29 +96,44 @@ export default function App() {
     return (
       <main className="grid min-h-screen place-items-center">
         <div className="h-16 w-16 animate-spin rounded-full border-4 border-aqua-100 border-t-aqua-500" />
+        <ToastContainer />
       </main>
     );
   }
 
-  if (!authState.firebaseUser) return <AuthScreen />;
+  if (!authState.firebaseUser) return (
+    <>
+      <AuthScreen />
+      <ToastContainer />
+    </>
+  );
 
   if (!authState.profile) {
     return (
-      <main className="grid min-h-screen place-items-center px-4">
-        <div className="w-full max-w-md rounded-[2rem] bg-white/90 p-6 text-center shadow-soft">
-          <h1 className="text-2xl font-black text-cyan-950">Loading your chats</h1>
-          <p className="mt-2 text-sm text-slate-500">{authState.error || 'Preparing your profile...'}</p>
-          {authState.error && (
-            <button onClick={authState.logout} className="mt-4 rounded-2xl bg-cyan-500 px-5 py-3 font-bold text-white">
-              Back to login
-            </button>
-          )}
-        </div>
-      </main>
+      <>
+        <main className="grid min-h-screen place-items-center px-4">
+          <div className="w-full max-w-md rounded-[2rem] bg-white/90 p-6 text-center shadow-soft">
+            <h1 className="text-2xl font-black text-cyan-950">Loading your chats</h1>
+            <p className="mt-2 text-sm text-slate-500">{authState.error || 'Preparing your profile...'}</p>
+            {authState.error && (
+              <button onClick={authState.logout} className="mt-4 rounded-2xl bg-cyan-500 px-5 py-3 font-bold text-white">
+                Back to login
+              </button>
+            )}
+          </div>
+        </main>
+        <ToastContainer />
+      </>
     );
   }
 
-  return <ChatShell {...authState} />;
+  return (
+    <>
+      <ChatShell {...authState} />
+      <ToastContainer />
+    </>
+  );
+}
 }
 
 function ChatShell({ firebaseUser, profile, setProfile, logout }) {
