@@ -1,5 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
+import { directPeer } from '../../utils/chat.js';
+import { downloadChatExport } from '../../utils/chatExport.js';
 import { success as toastSuccess, error as toastError } from '../../utils/toast.js';
+import { api, canContactUser } from '../../api.js';
 import ChatHeader from './ChatHeader.jsx';
 import ChatSelectionBar from './ChatSelectionBar.jsx';
 import Composer from './Composer.jsx';
@@ -13,6 +16,7 @@ export default function ChatPanel({
   sendEpoch = 0,
   statuses = [],
   typing,
+  blockState,
   isMobile,
   onBack,
   onAudio,
@@ -24,10 +28,16 @@ export default function ChatPanel({
   onBulkDeleteForMe
 }) {
   const meId = me._id || me.uid;
+  const peer = useMemo(() => directPeer(chat, me), [chat, me]);
+  const contactAllowed = chat.type !== 'direct' || canContactUser(blockState, peer?._id);
+  const isBlocked = Boolean(peer?._id && blockState?.blocked?.has(peer._id));
+
   const [replyTo, setReplyTo] = useState(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [actionMenu, setActionMenu] = useState(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const selectedMessages = useMemo(
     () => messages.filter((message) => selectedIds.has(message._id)),
@@ -95,8 +105,40 @@ export default function ChatPanel({
     }
   };
 
+  const handleToggleBlock = async () => {
+    if (!peer?._id) return;
+    try {
+      if (isBlocked) {
+        await api.unblockUser(peer._id);
+        toastSuccess('User unblocked');
+      } else {
+        await api.blockUser(peer._id);
+        toastSuccess('User blocked');
+      }
+    } catch (err) {
+      toastError(err.message || 'Could not update block status.');
+    }
+  };
+
+  const handleDownload = async (format) => {
+    try {
+      const { messages: history } = await api.exportChatHistory(chat._id);
+      const exportChat = {
+        _id: chat._id,
+        type: chat.type,
+        name: chat.name,
+        participants: chat.participants
+      };
+      downloadChatExport(exportChat, history, me, format);
+      toastSuccess('Chat downloaded');
+    } catch (err) {
+      toastError(err.message || 'Could not download chat.');
+    }
+  };
+
   const actionMessage = actionMenu?.message;
   const actionMine = actionMessage && (actionMessage.senderId === meId || actionMessage.sender?._id === meId);
+  const showTyping = contactAllowed ? typing : null;
 
   return (
     <>
@@ -108,7 +150,28 @@ export default function ChatPanel({
           onClear={clearSelection}
         />
       ) : (
-        <ChatHeader chat={chat} me={me} typing={typing} statuses={statuses} onBack={onBack} onAudio={onAudio} onVideo={onVideo} />
+        <ChatHeader
+          chat={chat}
+          me={me}
+          typing={showTyping}
+          statuses={statuses}
+          searchOpen={searchOpen}
+          searchQuery={searchQuery}
+          onSearchOpen={() => setSearchOpen(true)}
+          onSearchQueryChange={setSearchQuery}
+          onSearchClose={() => {
+            setSearchOpen(false);
+            setSearchQuery('');
+          }}
+          onBack={onBack}
+          onAudio={onAudio}
+          onVideo={onVideo}
+          callsEnabled={contactAllowed}
+          isBlocked={isBlocked}
+          onToggleBlock={handleToggleBlock}
+          onDownloadTxt={() => handleDownload('txt')}
+          onDownloadJson={() => handleDownload('json')}
+        />
       )}
 
       <MessageList
@@ -116,6 +179,7 @@ export default function ChatPanel({
         me={me}
         chat={chat}
         sendEpoch={sendEpoch}
+        searchQuery={searchOpen ? searchQuery : ''}
         selectionMode={selectionMode}
         selectedIds={selectedIds}
         onToggleSelect={toggleSelect}
@@ -126,10 +190,17 @@ export default function ChatPanel({
         onOpenActions={(message, position) => setActionMenu({ message, position })}
       />
 
+      {!contactAllowed && chat.type === 'direct' && (
+        <p className="border-t border-rose-100 bg-rose-50 px-4 py-2 text-center text-xs font-semibold text-rose-700">
+          {isBlocked ? 'You blocked this user. Unblock to message or call.' : 'You cannot message or call this user.'}
+        </p>
+      )}
+
       <Composer
         chat={chat}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
+        disabled={!contactAllowed}
         onSend={(payload) => {
           onSend({ ...payload, replyTo: replyTo ? {
             messageId: replyTo._id,

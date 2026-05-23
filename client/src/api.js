@@ -74,6 +74,7 @@ const presentUser = (id, data = {}) => ({
   isOnline: Boolean(data.isOnline || data.online),
   lastSeen: data.lastSeen?.toDate?.()?.toISOString?.() || data.lastSeen || '',
   connectionStatus: data.connectionStatus || 'none',
+  connections: data.connections || [],
   isFollowing: Boolean(data.isFollowing),
   followsMe: Boolean(data.followsMe)
 });
@@ -314,13 +315,18 @@ const mapStatusDoc = async (statusSnap) => {
   };
 };
 
-const messageListSignature = (messages) =>
-  messages.map((m) => `${m._id}:${m.status}:${m.pending ? 1 : 0}:${m.seenBy?.length || 0}`).join('|');
-
 export const messagesListEqual = (a, b) => {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
-  return messageListSignature(a) === messageListSignature(b);
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (x._id !== y._id || x.pending !== y.pending) return false;
+    if (x.body !== y.body || x.mediaUrl !== y.mediaUrl || x.type !== y.type) return false;
+    if (x.fileName !== y.fileName || x.deletedForEveryone !== y.deletedForEveryone) return false;
+    if ((x.replyTo?.messageId || '') !== (y.replyTo?.messageId || '')) return false;
+  }
+  return true;
 };
 
 export const subscribeMessages = (chatId, handler) => {
@@ -343,8 +349,11 @@ export const subscribeMessages = (chatId, handler) => {
       (snap) => {
         if (activeChatId !== chatId) return;
         if (!snap.docChanges().length) {
-          messageMap.clear();
+          const ids = new Set(snap.docs.map((docSnap) => docSnap.id));
           snap.docs.forEach((docSnap) => messageMap.set(docSnap.id, mapMessageDoc(docSnap, chatId)));
+          for (const id of [...messageMap.keys()]) {
+            if (!ids.has(id)) messageMap.delete(id);
+          }
         } else {
           snap.docChanges().forEach((change) => {
             if (change.type === 'removed') {
@@ -408,6 +417,19 @@ export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
   return sortMessages([...merged.values()]);
 };
 
+/** Replace optimistic message in-place without dropping the rest of the thread. */
+export const reconcileSentMessage = (current, tempId, serverMessage) => {
+  const withoutTemp = current.filter((item) => item._id !== tempId);
+  const idx = withoutTemp.findIndex((item) => item._id === serverMessage._id);
+  const merged = { ...serverMessage, localKey: tempId, pending: false };
+  if (idx >= 0) {
+    const next = [...withoutTemp];
+    next[idx] = merged;
+    return sortMessages(next);
+  }
+  return sortMessages([...withoutTemp, merged]);
+};
+
 const typingUserCache = new Map();
 
 export const subscribeTyping = (chatId, handler) => {
@@ -435,6 +457,40 @@ export const setTyping = (chatId, isTyping) => {
     isTyping,
     updatedAt: rtdbTimestamp()
   });
+};
+
+export const canContactUser = (blockState, peerId) => {
+  if (!peerId || !blockState) return true;
+  return !blockState.blocked?.has(peerId) && !blockState.blockedBy?.has(peerId);
+};
+
+export const subscribeBlockState = (uid, handler) => {
+  if (!uid) return () => {};
+  const state = { blocked: new Set(), blockedBy: new Set() };
+  const emit = () => handler({ blocked: new Set(state.blocked), blockedBy: new Set(state.blockedBy) });
+
+  const unsubBlocked = onSnapshot(collection(firestore, 'users', uid, 'blocked'), (snap) => {
+    state.blocked = new Set(snap.docs.map((docSnap) => docSnap.id));
+    emit();
+  });
+  const unsubBlockedBy = onSnapshot(collection(firestore, 'users', uid, 'blockedBy'), (snap) => {
+    state.blockedBy = new Set(snap.docs.map((docSnap) => docSnap.id));
+    emit();
+  });
+
+  return () => {
+    unsubBlocked();
+    unsubBlockedBy();
+  };
+};
+
+const assertContactAllowed = async (transaction, uid, otherUids) => {
+  for (const otherUid of otherUids) {
+    const theyBlock = await transaction.get(doc(firestore, 'users', otherUid, 'blocked', uid));
+    if (theyBlock.exists()) throw new Error('You cannot contact this user.');
+    const iBlock = await transaction.get(doc(firestore, 'users', uid, 'blocked', otherUid));
+    if (iBlock.exists()) throw new Error('Unblock this user to continue.');
+  }
 };
 
 export const api = {
@@ -632,6 +688,8 @@ export const api = {
       if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
         throw new Error('Chat not found or you are not a participant.');
       }
+      const others = (chatSnap.data().participantIds || []).filter((id) => id !== uid);
+      await assertContactAllowed(transaction, uid, others);
       transaction.set(messageRef, message);
       transaction.update(chatRef, {
         lastMessage: preview,
@@ -728,6 +786,33 @@ export const api = {
       fileName: prepared.name,
       fileSize: prepared.size,
       mimeType: prepared.type || ''
+    };
+  },
+
+  uploadStatusMedia: async (file, { onProgress } = {}) => {
+    const uid = currentUid();
+    const safeName = (file.name || 'media').replace(/[^\w.-]+/g, '_');
+    const path = `statuses/${uid}/${Date.now()}-${safeName}`;
+    const ref = storageRef(storage, path);
+    const task = uploadBytesResumable(ref, file, { contentType: file.type || 'application/octet-stream' });
+
+    await new Promise((resolve, reject) => {
+      task.on(
+        'state_changed',
+        (snapshot) => {
+          if (onProgress && snapshot.totalBytes) {
+            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+          }
+        },
+        reject,
+        resolve
+      );
+    });
+
+    return {
+      url: await getDownloadURL(ref),
+      storagePath: path,
+      resourceType: file.type?.startsWith('video/') ? 'video' : 'image'
     };
   },
 
@@ -851,5 +936,51 @@ export const api = {
     const isFollowing = following.includes(userId);
     await updateDoc(doc(firestore, 'users', uid), { following: isFollowing ? arrayRemove(userId) : arrayUnion(userId) });
     return { isFollowing: !isFollowing };
+  },
+
+  blockUser: async (blockedUid) => {
+    const uid = currentUid();
+    if (blockedUid === uid) throw new Error('You cannot block yourself.');
+    const batch = writeBatch(firestore);
+    batch.set(doc(firestore, 'users', uid, 'blocked', blockedUid), {
+      blockedUid,
+      blockedAt: serverTimestamp()
+    });
+    batch.set(doc(firestore, 'users', blockedUid, 'blockedBy', uid), {
+      blockerId: uid,
+      blockedAt: serverTimestamp()
+    });
+    await batch.commit();
+    return { ok: true };
+  },
+
+  unblockUser: async (blockedUid) => {
+    const uid = currentUid();
+    const batch = writeBatch(firestore);
+    batch.delete(doc(firestore, 'users', uid, 'blocked', blockedUid));
+    batch.delete(doc(firestore, 'users', blockedUid, 'blockedBy', uid));
+    await batch.commit();
+    return { ok: true };
+  },
+
+  isUserBlocked: async (blockedUid) => {
+    const uid = currentUid();
+    const snap = await getDoc(doc(firestore, 'users', uid, 'blocked', blockedUid));
+    return snap.exists();
+  },
+
+  exportChatHistory: async (chatId) => {
+    const uid = currentUid();
+    const chatSnap = await getDoc(doc(firestore, 'chats', chatId));
+    if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
+      throw new Error('You do not have access to this chat.');
+    }
+    const snap = await getDocs(
+      query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(500))
+    );
+    return {
+      chat: { _id: chatId, ...chatSnap.data() },
+      messages: snap.docs.map((docSnap) => mapMessageDoc(docSnap, chatId)).filter((m) => !m.deletedFor?.includes(uid))
+    };
   }
 };

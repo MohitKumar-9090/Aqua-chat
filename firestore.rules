@@ -14,6 +14,17 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if signedIn() && request.auth.uid == userId;
+
+      match /blocked/{blockedUid} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow write: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /blockedBy/{blockerId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, delete: if signedIn();
+        allow update: if false;
+      }
     }
 
     match /chats/{chatId} {

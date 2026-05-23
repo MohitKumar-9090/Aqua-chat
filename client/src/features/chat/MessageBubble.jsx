@@ -1,6 +1,7 @@
 import { memo, useState } from 'react';
 import { CheckCheck, FileText, Loader2 } from 'lucide-react';
 import { formatTime } from '../../utils/chat.js';
+import { highlightText } from '../../utils/highlightText.jsx';
 import { formatFileSize } from '../../utils/messageMedia.js';
 
 function LazyImage({ src, alt, className }) {
@@ -52,6 +53,7 @@ function MediaContent({ message }) {
 function MessageBubble({
   message,
   mine,
+  searchQuery = '',
   showSender,
   selected,
   selectionMode,
@@ -121,7 +123,9 @@ function MessageBubble({
         ) : (
           <>
             <MediaContent message={message} />
-            {message.body && <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>}
+            {message.body && (
+              <p className="whitespace-pre-wrap break-words text-sm leading-6">{highlightText(message.body, searchQuery)}</p>
+            )}
           </>
         )}
 

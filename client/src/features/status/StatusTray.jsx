@@ -1,12 +1,13 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { groupStatusesByUser, userHasActiveStatus, userHasUnviewedStatus } from '../../utils/statusHelpers.js';
+import StatusCreateModal from './StatusCreateModal.jsx';
 import StatusViewer from './StatusViewer.jsx';
 
-export default function StatusTray({ statuses, me, onCreate }) {
-  const inputRef = useRef(null);
+export default function StatusTray({ statuses, me, onCreateStatus }) {
   const [viewerBundle, setViewerBundle] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const meId = me?._id;
 
   const bundles = useMemo(() => {
@@ -22,26 +23,35 @@ export default function StatusTray({ statuses, me, onCreate }) {
     return list.slice(0, 14);
   }, [statuses, me, meId]);
 
-  const openBundle = (bundle) => setViewerBundle(bundle);
+  const myBundle = bundles.find((b) => b.userId === meId);
 
   return (
     <>
       <div className="flex gap-3 overflow-x-auto border-b border-aqua-100/40 px-3 py-4 scrollbar-hide">
-        <button type="button" onClick={() => inputRef.current?.click()} className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5 transition active:scale-95"
+        >
           <div className="relative">
             <Avatar user={me} size="lg" statusRing={userHasActiveStatus(statuses, meId)} />
-            <span className="absolute -bottom-0.5 -right-0.5 grid h-5 w-5 place-items-center rounded-full border-2 border-white bg-cyan-500 text-white">
-              <Plus size={12} />
+            <span className="absolute -bottom-0.5 -right-0.5 grid h-5 w-5 place-items-center rounded-full border-2 border-white bg-cyan-500 text-white shadow-md">
+              <Plus size={12} strokeWidth={3} />
             </span>
           </div>
-          <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">Add</span>
-          <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => onCreate(e.target.files?.[0])} />
+          <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">My status</span>
         </button>
 
-        <button type="button" onClick={() => onCreate()} className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5">
-          <Avatar user={me} size="lg" />
-          <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">Text</span>
-        </button>
+        {myBundle && (
+          <button
+            type="button"
+            onClick={() => setViewerBundle(myBundle)}
+            className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5 transition active:scale-95"
+          >
+            <Avatar user={me} size="lg" statusRing />
+            <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">View mine</span>
+          </button>
+        )}
 
         {bundles
           .filter((bundle) => bundle.userId !== meId)
@@ -49,7 +59,7 @@ export default function StatusTray({ statuses, me, onCreate }) {
             <button
               key={bundle.userId}
               type="button"
-              onClick={() => openBundle(bundle)}
+              onClick={() => setViewerBundle(bundle)}
               className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5 transition active:scale-95"
             >
               <Avatar
@@ -64,6 +74,11 @@ export default function StatusTray({ statuses, me, onCreate }) {
           ))}
       </div>
 
+      <StatusCreateModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onSubmit={onCreateStatus}
+      />
       {viewerBundle && <StatusViewer bundle={viewerBundle} onClose={() => setViewerBundle(null)} />}
     </>
   );

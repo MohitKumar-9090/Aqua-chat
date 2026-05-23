@@ -5,7 +5,7 @@ import { detectMessageType, prepareUploadFile } from '../../utils/messageMedia.j
 
 const emptyRecorder = { recording: false, stream: null, mediaRecorder: null, chunks: [] };
 
-export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload, isMobile }) {
+export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload, isMobile, disabled = false }) {
   const [text, setText] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -14,6 +14,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
   const typingTimerRef = useRef(null);
 
   const type = () => {
+    if (disabled) return;
     setFirebaseTyping(chat._id, true).catch(console.error);
     clearTimeout(typingTimerRef.current);
     typingTimerRef.current = setTimeout(() => setFirebaseTyping(chat._id, false).catch(console.error), 700);
@@ -21,7 +22,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
 
   const submit = (event) => {
     event.preventDefault();
-    if (!text.trim() || uploading) return;
+    if (disabled || !text.trim() || uploading) return;
     onSend({ type: 'text', body: text.trim() });
     setText('');
   };
@@ -116,7 +117,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
         <button type="button" className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Emoji">
           <Smile size={20} />
         </button>
-        <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700 disabled:opacity-50" title="Attach">
+        <button type="button" onClick={() => fileRef.current?.click()} disabled={disabled || uploading} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700 disabled:opacity-50" title="Attach">
           <Paperclip size={20} />
         </button>
         <input
@@ -129,15 +130,15 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
         <input
           value={text}
           onChange={(e) => { setText(e.target.value); type(); }}
-          placeholder="Message..."
+          placeholder={disabled ? 'Messaging unavailable' : 'Message...'}
           enterKeyHint="send"
-          disabled={uploading}
-          className="min-w-0 flex-1 rounded-2xl border border-aqua-100/60 bg-white px-4 py-2.5 text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft sm:px-5 sm:py-3 sm:text-sm"
+          disabled={disabled || uploading}
+          className="min-w-0 flex-1 rounded-2xl border border-aqua-100/60 bg-white px-4 py-2.5 text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft disabled:cursor-not-allowed disabled:bg-slate-50 sm:px-5 sm:py-3 sm:text-sm"
         />
         <button
           type="button"
           onClick={toggleRecord}
-          disabled={uploading}
+          disabled={disabled || uploading}
           className={`rounded-2xl p-2.5 transition duration-200 ${recorder.recording ? 'bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-200/50' : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'} disabled:opacity-50`}
           title="Voice note"
         >
@@ -145,7 +146,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
         </button>
         <button
           type="submit"
-          disabled={uploading || !text.trim()}
+          disabled={disabled || uploading || !text.trim()}
           className="rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 p-2.5 text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-60 disabled:shadow-none"
           title="Send"
         >

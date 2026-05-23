@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, KeyRound, X } from 'lucide-react';
+import { Camera, ImageIcon, KeyRound, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { api } from '../../api.js';
 import { changePassword } from '../../firebase.js';
@@ -16,7 +16,8 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [message, setMessage] = useState('');
-  const fileRef = useRef(null);
+  const galleryRef = useRef(null);
+  const cameraRef = useRef(null);
   const canChangePassword = firebaseUser?.providerData?.some((provider) => provider.providerId === 'password');
 
   useEffect(() => {
@@ -100,17 +101,51 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
         </div>
 
         <div className="mb-6 flex flex-col items-center gap-3">
-          <Avatar name={form.displayName} image={displayPhoto} size="xl" />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={busy}
-            className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-2.5 text-sm font-bold text-white shadow-md disabled:opacity-50"
-          >
-            <Camera size={16} />
-            {busy ? `Uploading ${uploadProgress}%` : 'Change photo'}
-          </button>
-          <input ref={fileRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(event) => uploadPhoto(event.target.files?.[0])} />
+          <div className="rounded-full bg-gradient-to-tr from-cyan-500 via-aqua-400 to-emerald-400 p-[3px] shadow-lg">
+            <Avatar name={form.displayName} image={displayPhoto} size="xl" />
+          </div>
+          {busy && uploadProgress > 0 && (
+            <div className="w-full max-w-xs">
+              <div className="h-1.5 overflow-hidden rounded-full bg-aqua-100">
+                <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${uploadProgress}%` }} />
+              </div>
+            </div>
+          )}
+          <div className="flex flex-wrap justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => galleryRef.current?.click()}
+              disabled={busy}
+              className="flex items-center gap-2 rounded-2xl border border-aqua-200 bg-white px-4 py-2.5 text-sm font-bold text-cyan-900 shadow-sm disabled:opacity-50"
+            >
+              <ImageIcon size={16} />
+              Gallery
+            </button>
+            <button
+              type="button"
+              onClick={() => cameraRef.current?.click()}
+              disabled={busy}
+              className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-2.5 text-sm font-bold text-white shadow-md disabled:opacity-50"
+            >
+              <Camera size={16} />
+              Camera
+            </button>
+          </div>
+          <input
+            ref={galleryRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => uploadPhoto(event.target.files?.[0])}
+          />
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/*"
+            capture="user"
+            className="hidden"
+            onChange={(event) => uploadPhoto(event.target.files?.[0])}
+          />
         </div>
 
         <label className="mb-3.5 block">

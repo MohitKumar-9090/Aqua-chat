@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react';
 import { filterVisibleMessages } from '../../api.js';
 import { useMessageScroll } from '../../hooks/useMessageScroll.js';
+import { messageMatchesQuery } from '../../utils/highlightText.jsx';
 import MessageBubble from './MessageBubble.jsx';
 
 function MessageList({
@@ -8,6 +9,7 @@ function MessageList({
   me,
   chat,
   sendEpoch = 0,
+  searchQuery = '',
   selectionMode,
   selectedIds,
   onToggleSelect,
@@ -15,7 +17,11 @@ function MessageList({
   onEnterSelectionMode
 }) {
   const meId = me._id || me.uid;
-  const visibleMessages = useMemo(() => filterVisibleMessages(messages, meId), [messages, meId]);
+  const visibleMessages = useMemo(() => {
+    const visible = filterVisibleMessages(messages, meId);
+    if (!searchQuery?.trim()) return visible;
+    return visible.filter((message) => messageMatchesQuery(message, searchQuery));
+  }, [messages, meId, searchQuery]);
   const { containerRef, bottomRef } = useMessageScroll(visibleMessages, chat?._id, sendEpoch);
 
   const clampMenuPosition = (point) => {
@@ -45,6 +51,9 @@ function MessageList({
       className="message-texture min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-6 sm:py-6"
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-2 sm:gap-3">
+        {searchQuery?.trim() && !visibleMessages.length && (
+          <p className="py-8 text-center text-sm text-slate-500">No messages match your search.</p>
+        )}
         {visibleMessages.map((message) => {
           const mine = message.sender?._id === meId || message.senderId === meId;
           return (
@@ -52,6 +61,7 @@ function MessageList({
               key={message.localKey || message._id}
               message={message}
               mine={mine}
+              searchQuery={searchQuery}
               showSender={chat?.type === 'group'}
               selected={selectedIds.has(message._id)}
               selectionMode={selectionMode}

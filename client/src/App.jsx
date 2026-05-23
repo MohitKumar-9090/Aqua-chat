@@ -1,4 +1,4 @@
-import { lazy, Suspense, startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Home, LogOut, Search, Settings, Users, WifiOff } from 'lucide-react';
 import EmailVerificationPanel from './components/auth/EmailVerificationPanel.jsx';
 import Avatar from './components/Avatar.jsx';
@@ -6,15 +6,19 @@ import LoadingSpinner from './components/LoadingSpinner.jsx';
 import ToastContainer from './components/ToastContainer.jsx';
 import {
   api,
+  canContactUser,
   mergeWithPendingMessages,
   messagesListEqual,
   primeUserCache,
+  reconcileSentMessage,
   setTyping as setFirebaseTyping,
+  subscribeBlockState,
   subscribeChats,
   subscribeMessages,
   subscribePresence,
   subscribeTyping
 } from './api.js';
+import { playIncomingRing, stopIncomingRing, unlockCallAudio } from './utils/callRingtone.js';
 import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
@@ -26,7 +30,7 @@ import { getCallMediaStream } from './utils/media.js';
 import { scheduleIdle } from './utils/scheduleIdle.js';
 import { auth } from './firebase.js';
 import { chatImage, chatTitle, directPeer, formatTime, statusText } from './utils/chat.js';
-import { userHasUnviewedStatus } from './utils/statusHelpers.js';
+import { buildStatusContactIds, filterStatusesForContacts, userHasUnviewedStatus } from './utils/statusHelpers.js';
 import EmptyState from './features/chat/EmptyState.jsx';
 import PeopleSearchRow from './features/people/PeopleSearchRow.jsx';
 
@@ -144,6 +148,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [sendEpoch, setSendEpoch] = useState(0);
   const [query, setQuery] = useState('');
   const [typing, setTyping] = useState(null);
+  const [blockState, setBlockState] = useState({ blocked: new Set(), blockedBy: new Set() });
   const [panel, setPanel] = useState(() => new URLSearchParams(window.location.search).get('panel') || 'chats');
   const [groupOpen, setGroupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -166,6 +171,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const peerConnectionRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteAudioRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteStreamRef = useRef(null);
   const callUnsubscribersRef = useRef([]);
@@ -175,11 +181,29 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const seenTimerRef = useRef(null);
   const callStateRef = useRef(callState);
   const usersRef = useRef(users);
+  const blockStateRef = useRef(blockState);
   selectedChatRef.current = selectedChat;
   callStateRef.current = callState;
   usersRef.current = users;
+  blockStateRef.current = blockState;
+
+  const isBlockedUser = (userId) => {
+    if (!userId) return false;
+    const state = blockStateRef.current;
+    return state.blocked?.has(userId) || state.blockedBy?.has(userId);
+  };
 
   const selectedPeer = useMemo(() => directPeer(selectedChat, profile), [selectedChat, profile]);
+
+  const statusContactIds = useMemo(
+    () => buildStatusContactIds(profile?._id, chats, profile?.connections),
+    [profile?._id, profile?.connections, chats]
+  );
+
+  const visibleStatuses = useMemo(
+    () => filterStatusesForContacts(statuses, statusContactIds),
+    [statuses, statusContactIds]
+  );
 
   const loadUsers = async (searchText = query) => {
     setUsersLoading(true);
@@ -237,7 +261,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const presenceRef = useRef({});
 
+  useEffect(() => {
+    const uid = profile?._id || firebaseUser?.uid;
+    if (!uid) return undefined;
+    return subscribeBlockState(uid, setBlockState);
+  }, [profile?._id, firebaseUser?.uid]);
+
   const mergePresence = (user, presence) => {
+    if (isBlockedUser(user._id)) {
+      return { ...user, isOnline: false, online: false, lastSeen: null };
+    }
     const live = presence[user._id];
     if (!live) {
       return { ...user, isOnline: false, online: false };
@@ -263,6 +296,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }));
 
   useEffect(() => {
+    const presence = presenceRef.current;
+    setUsers((current) => applyPresenceToUsers(current, presence));
+    setChats((current) => applyPresenceToChats(current, presence));
+  }, [blockState]);
+
+  useEffect(() => {
     const unsubscribePresence = subscribePresence((presence) => {
       presenceRef.current = presence;
       setUsers((current) => applyPresenceToUsers(current, presence));
@@ -283,12 +322,18 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   useEffect(() => {
     const online = () => setIsOnline(true);
     const offline = () => setIsOnline(false);
+    const unlockAudio = () => unlockCallAudio();
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
+    document.addEventListener('pointerdown', unlockAudio, { once: true, passive: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
     registerBackgroundSync().catch(() => {});
+    unlockCallAudio();
     return () => {
       window.removeEventListener('online', online);
       window.removeEventListener('offline', offline);
+      document.removeEventListener('pointerdown', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
     };
   }, []);
 
@@ -323,16 +368,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
       if (activeMessagesChatRef.current !== chatId) return;
-      startTransition(() => {
-        setMessages((current) => {
-          const next = mergeWithPendingMessages(nextMessages, current);
-          return messagesListEqual(current, next) ? current : next;
-        });
+      setMessages((current) => {
+        const next = mergeWithPendingMessages(nextMessages, current);
+        return messagesListEqual(current, next) ? current : next;
       });
       clearTimeout(seenTimerRef.current);
       seenTimerRef.current = setTimeout(() => api.seen(chatId).catch(console.error), 1200);
     });
-    const unsubscribeTyping = subscribeTyping(chatId, setTyping);
+    const unsubscribeTyping = subscribeTyping(chatId, (next) => {
+      if (next?._id && isBlockedUser(next._id)) {
+        setTyping(null);
+        return;
+      }
+      setTyping(next);
+    });
     return () => {
       if (activeMessagesChatRef.current === chatId) activeMessagesChatRef.current = null;
       clearTimeout(seenTimerRef.current);
@@ -408,6 +457,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const sendPayload = async (payload) => {
     if (!selectedChat) return;
+    if (selectedChat.type === 'direct' && selectedPeer && !canContactUser(blockStateRef.current, selectedPeer._id)) {
+      toastError('You cannot message this user.');
+      return;
+    }
     const chatId = selectedChat._id;
     const tempId = `temp_${Date.now()}`;
     const optimistic = {
@@ -441,10 +494,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       const { message } = await api.sendMessage({ chatId, sender: profile, ...payload });
       if (activeMessagesChatRef.current !== chatId) return;
       setMessages((current) => {
-        const next = mergeWithPendingMessages(
-          [{ ...message, localKey: tempId }],
-          current.filter((item) => item._id !== tempId)
-        );
+        const next = reconcileSentMessage(current, tempId, message);
         return messagesListEqual(current, next) ? current : next;
       });
       setChats((current) =>
@@ -461,21 +511,29 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
   };
 
-  const createStatus = async (file) => {
+  const createStatus = async (payload) => {
     try {
-      if (file) {
-        const upload = await api.upload(file);
+      if (payload.type === 'text') {
         await api.createStatus({
-          type: upload.resourceType === 'video' ? 'video' : 'image',
-          statusMedia: upload.url,
-          mediaUrl: upload.url
+          type: 'text',
+          statusText: payload.statusText,
+          caption: payload.statusText
         });
-      } else {
-        const caption = window.prompt('Status');
-        if (caption?.trim()) await api.createStatus({ type: 'text', statusText: caption.trim(), caption: caption.trim() });
+        toastSuccess('Status posted');
+        return;
       }
+      const upload = await api.uploadStatusMedia(payload.file, { onProgress: payload.onProgress });
+      await api.createStatus({
+        type: payload.type,
+        statusText: payload.statusText || '',
+        caption: payload.statusText || '',
+        statusMedia: upload.url,
+        mediaUrl: upload.url
+      });
+      toastSuccess('Status posted');
     } catch (error) {
       toastError(error.message || 'Could not post status.');
+      throw error;
     }
   };
 
@@ -492,16 +550,50 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       ...current,
       active: true,
       callType,
-      cameraOff: callType === 'voice'
+      muted: false,
+      cameraOff: callType === 'voice',
+      speakerOn: true
     }));
   };
 
-  const attachRemoteVideo = () => {
-    const el = remoteVideoRef.current;
+  const toggleCallMute = () => {
+    const track = localStreamRef.current?.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    setCallState((current) => (current ? { ...current, muted: !track.enabled } : current));
+  };
+
+  const toggleCallCamera = () => {
+    const track = localStreamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    setCallState((current) => (current ? { ...current, cameraOff: !track.enabled } : current));
+    if (localVideoRef.current) {
+      localVideoRef.current.style.opacity = track.enabled ? '1' : '0.3';
+    }
+  };
+
+  const toggleCallSpeaker = () => {
+    setCallState((current) => {
+      if (!current) return current;
+      const speakerOn = !current.speakerOn;
+      const audio = remoteAudioRef.current;
+      const video = remoteVideoRef.current;
+      if (audio) audio.muted = !speakerOn;
+      if (video) video.muted = !speakerOn;
+      return { ...current, speakerOn };
+    });
+  };
+
+  const attachRemoteMedia = () => {
     const stream = remoteStreamRef.current;
-    if (!el || !stream) return;
-    if (el.srcObject !== stream) el.srcObject = stream;
-    el.play?.().catch(() => {});
+    if (!stream) return;
+    const video = remoteVideoRef.current;
+    const audio = remoteAudioRef.current;
+    if (video && video.srcObject !== stream) video.srcObject = stream;
+    if (audio && audio.srcObject !== stream) audio.srcObject = stream;
+    video?.play?.().catch(() => {});
+    audio?.play?.().catch(() => {});
   };
 
   const signalingUid = () => {
@@ -530,7 +622,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         calls.createPeerConnection(
           (remoteStream) => {
             remoteStreamRef.current = remoteStream;
-            attachRemoteVideo();
+            attachRemoteMedia();
           },
           (candidate) => {
             if (!iceReady) return;
@@ -545,7 +637,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       peerConnectionRef.current = pc;
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') attachRemoteVideo();
+        if (pc.connectionState === 'connected') attachRemoteMedia();
       };
 
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
@@ -553,7 +645,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
           await peerConnectionRef.current.flushRemoteIceCandidates();
-          attachRemoteVideo();
+          attachRemoteMedia();
         }
         if (room.status === 'ended') endCall();
       });
@@ -592,17 +684,30 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       }
     } finally {
       setCallState((current) => (current ? { ...current, preparing: false } : current));
-      attachRemoteVideo();
+      attachRemoteMedia();
     }
   };
 
   useEffect(() => {
     if (!callState?.active || callState?.callType !== 'video') return;
-    attachRemoteVideo();
+    attachRemoteMedia();
   }, [callState?.active, callState?.callType, callState?.preparing, callState?.incoming]);
+
+  useEffect(() => {
+    if (callState?.active && callState?.incoming) {
+      playIncomingRing();
+    } else {
+      stopIncomingRing();
+    }
+    return () => stopIncomingRing();
+  }, [callState?.active, callState?.incoming, callState?.callId]);
 
   const startCall = async (callType) => {
     if (!selectedPeer || callState?.active) return;
+    if (!canContactUser(blockStateRef.current, selectedPeer._id)) {
+      toastError('You cannot call this user.');
+      return;
+    }
     const calls = await getCallRuntime();
     const uid = await calls.waitForAuthReady();
     const callId = `call_${[uid, selectedPeer._id].sort().join('_')}_${Date.now()}`;
@@ -614,7 +719,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       callType,
       caller: selectedPeer,
       from: uid,
-      to: selectedPeer._id
+      to: selectedPeer._id,
+      muted: false,
+      cameraOff: callType === 'voice',
+      speakerOn: true
     });
 
     try {
@@ -628,6 +736,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const answerCall = async () => {
     if (!callState?.callId || !callState?.offer) return;
+    stopIncomingRing();
     try {
       const calls = await getCallRuntime();
       const uid = await calls.waitForAuthReady();
@@ -651,6 +760,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const endCall = () => {
+    stopIncomingRing();
     const endingCallId = activeCallId || callState?.callId;
     const from = callState?.from || auth?.currentUser?.uid || profile?._id;
     const to = callState?.to || selectedPeer?._id;
@@ -661,6 +771,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     localStreamRef.current = null;
     remoteStreamRef.current = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     if (endingCallId && to) {
       getCallRuntime().then((calls) => calls.endCallRoom(endingCallId, from, to)).catch(console.error);
     }
@@ -679,6 +791,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       if (cancelled) return;
       unsubscribe = calls.subscribeIncomingCalls(uid, (incoming) => {
         if (!incoming) return;
+        if (!canContactUser(blockStateRef.current, incoming.from)) return;
 
         const current = callStateRef.current;
         if (current?.active && !current?.incoming) return;
@@ -701,7 +814,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           caller,
           from: incoming.from,
           to: incoming.to,
-          offer: incoming.offer || null
+          offer: incoming.offer || null,
+          muted: false,
+          cameraOff: (incoming.callType || 'voice') === 'voice',
+          speakerOn: true
         });
       });
     });
@@ -770,7 +886,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
           {/* Status Tray */}
           <Suspense fallback={<div className="h-20 animate-pulse bg-aqua-50/40" />}>
-            <StatusTray statuses={statuses} onCreate={createStatus} me={profile} />
+            <StatusTray statuses={visibleStatuses} onCreateStatus={createStatus} me={profile} />
           </Suspense>
 
           {/* Tab Buttons */}
@@ -800,7 +916,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                       name={chatTitle(chat, profile)}
                       image={chatImage(chat, profile)}
                       online={directPeer(chat, profile)?.isOnline}
-                      statusRing={userHasUnviewedStatus(statuses, directPeer(chat, profile)?._id, profile._id)}
+                      statusRing={userHasUnviewedStatus(visibleStatuses, directPeer(chat, profile)?._id, profile._id)}
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-3">
@@ -842,7 +958,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     key={user._id}
                     user={user}
                     meId={profile._id}
-                    statuses={statuses}
+                    statuses={visibleStatuses}
                     connecting={connectingUserId === user._id}
                     onConnect={connectWithUser}
                     onAccept={acceptUser}
@@ -873,8 +989,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   me={profile}
                   messages={messages}
                   sendEpoch={sendEpoch}
-                  statuses={statuses}
+                  statuses={visibleStatuses}
                   typing={typing}
+                  blockState={blockState}
                   isMobile={isMobile}
                   onBack={closeChat}
                   onAudio={() => startCall('voice')}
@@ -921,7 +1038,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       )}
       {callState?.active && (
         <Suspense fallback={null}>
-          <CallModal state={callState} localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} onAnswer={answerCall} onEnd={endCall} />
+          <CallModal
+            state={callState}
+            localVideoRef={localVideoRef}
+            remoteVideoRef={remoteVideoRef}
+            remoteAudioRef={remoteAudioRef}
+            muted={callState.muted}
+            cameraOff={callState.cameraOff}
+            speakerOn={callState.speakerOn !== false}
+            onToggleMute={toggleCallMute}
+            onToggleCamera={toggleCallCamera}
+            onToggleSpeaker={toggleCallSpeaker}
+            onAnswer={answerCall}
+            onEnd={endCall}
+          />
         </Suspense>
       )}
       {showInstall && (

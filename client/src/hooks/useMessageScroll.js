@@ -7,14 +7,20 @@ export const isNearBottom = (element, threshold = NEAR_BOTTOM_THRESHOLD) => {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
 };
 
+const scrollSignature = (messages) => {
+  if (!messages.length) return '0';
+  const last = messages[messages.length - 1];
+  return `${messages.length}:${last?.localKey || last?._id || ''}:${last?.pending ? 1 : 0}`;
+};
+
 /**
  * WhatsApp-style scroll: stick to bottom on send or near-bottom incoming only.
- * Preserves scroll position during sync/reconciliation updates.
+ * Ignores status/seen-only updates; preserves anchor during sync.
  */
 export function useMessageScroll(messages, chatKey, sendEpoch = 0) {
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
-  const prevRef = useRef({ count: 0, lastId: null, sendEpoch: 0 });
+  const prevRef = useRef({ signature: '', sendEpoch: 0 });
   const layoutRef = useRef(null);
 
   const scrollToBottom = (behavior = 'auto') => {
@@ -31,31 +37,33 @@ export function useMessageScroll(messages, chatKey, sendEpoch = 0) {
     container.scrollTop = Math.max(0, nextTop);
   };
 
+  const signature = scrollSignature(messages);
+
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const prevLayout = layoutRef.current;
-    const last = messages[messages.length - 1];
-    const lastId = last?.localKey || last?._id || null;
     const prev = prevRef.current;
-    const countIncreased = messages.length > prev.count;
     const userJustSent = sendEpoch > prev.sendEpoch;
+    const signatureChanged = signature !== prev.signature;
     const wasNearBottom = prevLayout
       ? prevLayout.scrollHeight - prevLayout.scrollTop - prevLayout.clientHeight <= NEAR_BOTTOM_THRESHOLD
       : true;
 
-    if (messages.length) {
-      if (userJustSent) {
-        prevRef.current = { count: messages.length, lastId, sendEpoch };
-        scrollToBottom('smooth');
-      } else if (countIncreased && wasNearBottom) {
-        prevRef.current = { count: messages.length, lastId, sendEpoch };
-        scrollToBottom('smooth');
-      } else {
-        prevRef.current = { count: messages.length, lastId, sendEpoch };
-        preserveScrollAnchor(container);
-      }
+    if (!messages.length) {
+      prevRef.current = { signature, sendEpoch };
+    } else if (userJustSent) {
+      prevRef.current = { signature, sendEpoch };
+      scrollToBottom('smooth');
+    } else if (signatureChanged && wasNearBottom) {
+      prevRef.current = { signature, sendEpoch };
+      scrollToBottom('smooth');
+    } else if (signatureChanged) {
+      prevRef.current = { signature, sendEpoch };
+      preserveScrollAnchor(container);
+    } else {
+      prevRef.current = { signature, sendEpoch };
     }
 
     layoutRef.current = {
@@ -63,11 +71,11 @@ export function useMessageScroll(messages, chatKey, sendEpoch = 0) {
       scrollTop: container.scrollTop,
       clientHeight: container.clientHeight
     };
-  }, [messages, sendEpoch]);
+  }, [signature, sendEpoch, messages.length]);
 
   useLayoutEffect(() => {
     if (!chatKey) return;
-    prevRef.current = { count: 0, lastId: null, sendEpoch };
+    prevRef.current = { signature: '', sendEpoch: 0 };
     layoutRef.current = null;
     requestAnimationFrame(() => scrollToBottom('auto'));
   }, [chatKey]);

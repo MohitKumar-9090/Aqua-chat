@@ -34,3 +34,5 @@ export const userHasUnviewedStatus = (statuses, userId, meId) => {
 };
 
 export const statusExpiresAt = () => new Date(Date.now() + MS_24H).toISOString();
+
+export { buildStatusContactIds, filterStatusesForContacts } from './statusContacts.js';
