@@ -3,20 +3,21 @@ import { getFirestore } from 'firebase/firestore';
 import { getDatabase } from 'firebase/database';
 import { getStorage } from 'firebase/storage';
 import {
+  applyActionCode,
   getAuth,
   GoogleAuthProvider,
-  RecaptchaVerifier,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
-  signInWithPhoneNumber,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signOut,
   updatePassword,
   updateProfile,
   setPersistence,
-  browserLocalPersistence,
-  onAuthStateChanged
+  browserLocalPersistence
 } from 'firebase/auth';
 import { firebaseConfig, validateClientEnv } from './config/env.js';
 
@@ -59,18 +60,45 @@ try {
   initError = error.message;
 }
 
-export const emailLogin = (email, password) => signInWithEmailAndPassword(auth, email.trim(), password);
+export const getAuthActionSettings = () => ({
+  url: window.location.origin,
+  handleCodeInApp: true
+});
+
+export const emailLogin = (email, password) =>
+  signInWithEmailAndPassword(auth, email.trim(), password);
 
 export const emailSignup = async ({ email, password, displayName }) => {
   const name = displayName?.trim();
   if (!name) throw new Error('Name is required for signup.');
 
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-  if (name) {
-    await updateProfile(credential.user, { displayName: name });
-  }
-  return credential;
+  if (name) await updateProfile(credential.user, { displayName: name });
+  await sendEmailVerification(credential.user, getAuthActionSettings());
+  await signOut(auth);
+  return { email: email.trim(), displayName: name };
 };
+
+export const resendVerificationEmail = async (user) => {
+  if (!user) throw new Error('Sign in to resend verification email.');
+  await sendEmailVerification(user, getAuthActionSettings());
+};
+
+export const sendPasswordReset = (email) =>
+  sendPasswordResetEmail(auth, email.trim(), getAuthActionSettings());
+
+export const refreshAuthUser = async (user) => {
+  if (!user) return null;
+  await user.reload();
+  return auth.currentUser;
+};
+
+export const verifyEmailWithCode = (oobCode) => applyActionCode(auth, oobCode);
+
+export const isPasswordProvider = (user) =>
+  user?.providerData?.some((provider) => provider.providerId === 'password') ?? false;
+
+export { signOut };
 
 export const changePassword = (user, password) => updatePassword(user, password);
 
@@ -106,41 +134,3 @@ export const googleLogin = async () => {
   }
 };
 
-export const createRecaptcha = () => {
-  if (window.recaptchaVerifier) return window.recaptchaVerifier;
-
-  window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-    size: 'invisible',
-    callback: (token) => {
-      // reCAPTCHA solved
-    },
-    'expired-callback': () => {
-      // reCAPTCHA expired
-      window.recaptchaVerifier = null;
-    }
-  });
-
-  return window.recaptchaVerifier;
-};
-
-export const phoneLogin = (phoneNumber) => {
-  const verifier = createRecaptcha();
-  return signInWithPhoneNumber(auth, phoneNumber, verifier);
-};
-
-export const completePhoneLogin = async (confirmation, otp, displayName) => {
-  const credential = await confirmation.confirm(otp);
-  if (displayName) {
-    await updateProfile(credential.user, { displayName });
-  }
-  return credential;
-};
-
-/**
- * Monitor auth state with custom callback
- * Useful for global auth state management
- */
-export const subscribeToAuthState = (callback) => {
-  if (!auth) return () => {};
-  return onAuthStateChanged(auth, callback);
-};

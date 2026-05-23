@@ -163,27 +163,64 @@ const mapMessageDoc = (messageSnap, chatId) => {
 
 const sortMessages = (messages) =>
   [...messages].sort((a, b) => {
-    const aTime = new Date(a.createdAt).getTime() || a.clientCreatedAt || 0;
-    const bTime = new Date(b.createdAt).getTime() || b.clientCreatedAt || 0;
+    const aTime = a.clientCreatedAt || new Date(a.createdAt).getTime() || 0;
+    const bTime = b.clientCreatedAt || new Date(b.createdAt).getTime() || 0;
     return aTime - bTime;
   });
 
+const applySnapshot = (snap, chatId, handler) => {
+  const unique = new Map();
+  snap.docs.forEach((docSnap) => {
+    unique.set(docSnap.id, mapMessageDoc(docSnap, chatId));
+  });
+  handler(sortMessages([...unique.values()]));
+};
+
 export const subscribeMessages = (chatId, handler) => {
-  const q = query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100));
-  return onSnapshot(
-    q,
-    (snap) => {
-      const unique = new Map();
-      snap.docs.forEach((docSnap) => {
-        unique.set(docSnap.id, mapMessageDoc(docSnap, chatId));
-      });
-      handler(sortMessages([...unique.values()]));
-    },
-    (error) => {
-      console.error('Message listener error:', error);
-      handler([]);
-    }
+  let unsubscribe = () => {};
+  const primaryQuery = query(
+    collection(firestore, 'chats', chatId, 'messages'),
+    orderBy('clientCreatedAt', 'asc'),
+    limit(100)
   );
+  const fallbackQuery = query(collection(firestore, 'chats', chatId, 'messages'), limit(100));
+
+  const attach = (q, allowFallback = true) => {
+    unsubscribe = onSnapshot(
+      q,
+      (snap) => applySnapshot(snap, chatId, handler),
+      (error) => {
+        console.error('Message listener error:', error);
+        if (allowFallback && error.code === 'failed-precondition') {
+          attach(fallbackQuery, false);
+          return;
+        }
+      }
+    );
+  };
+
+  attach(primaryQuery, true);
+  return () => unsubscribe();
+};
+
+export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
+  const pending = currentMessages.filter((item) => item.pending);
+  const merged = new Map();
+  serverMessages.forEach((item) => merged.set(item._id, item));
+
+  pending.forEach((item) => {
+    const matched = serverMessages.some(
+      (server) =>
+        server.senderId === item.senderId &&
+        server.type === item.type &&
+        server.body === item.body &&
+        server.mediaUrl === item.mediaUrl &&
+        Math.abs((server.clientCreatedAt || 0) - (item.clientCreatedAt || 0)) < 60000
+    );
+    if (!matched) merged.set(item._id, item);
+  });
+
+  return sortMessages([...merged.values()]);
 };
 
 export const subscribeTyping = (chatId, handler) => {
@@ -262,13 +299,30 @@ export const api = {
       snaps = (await getDocs(q)).docs;
     }
 
-    const allDocs = clean && snaps.length < 10 ? (await getDocs(query(collection(firestore, 'users'), limit(120)))).docs : snaps;
+    const [mySnap, chatsSnap, allDocsSource] = await Promise.all([
+      getDoc(doc(firestore, 'users', uid)),
+      getDocs(query(collection(firestore, 'chats'), where('participantIds', 'array-contains', uid))),
+      clean && snaps.length < 10 ? getDocs(query(collection(firestore, 'users'), limit(120))) : Promise.resolve(null)
+    ]);
+
+    const allDocs = allDocsSource?.docs || snaps;
     const totalSnap = await getDocs(query(collection(firestore, 'users'), limit(120)));
     const totalUsers = totalSnap.docs.filter((snap) => snap.id !== uid).length;
+    const connectedIds = new Set(mySnap.data()?.connections || []);
+    chatsSnap.docs.forEach((chatDoc) => {
+      (chatDoc.data().participantIds || []).filter((id) => id !== uid).forEach((id) => connectedIds.add(id));
+    });
+
     const seen = new Set();
     const users = allDocs
       .filter((snap) => snap.id !== uid)
-      .map((snap) => presentUser(snap.id, snap.data()))
+      .map((snap) => {
+        const user = presentUser(snap.id, snap.data());
+        return {
+          ...user,
+          connectionStatus: connectedIds.has(user._id) ? 'connected' : user.connectionStatus
+        };
+      })
       .filter((user) => {
         if (seen.has(user._id)) return false;
         seen.add(user._id);
@@ -343,6 +397,11 @@ export const api = {
   sendMessage: async ({ chatId, ...payload }) => {
     const uid = currentUid();
     const chatRef = doc(firestore, 'chats', chatId);
+    const chatSnap = await getDoc(chatRef);
+    if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
+      throw new Error('Chat not found or you are not a participant.');
+    }
+
     const messageRef = doc(collection(firestore, 'chats', chatId, 'messages'));
     const sender = await readUser(uid);
     const clientCreatedAt = Date.now();
@@ -434,8 +493,14 @@ export const api = {
     return { ok: true };
   },
 
-  connectUser: async (userId) => ({ status: 'connected', chatId: (await api.createDirectChat(userId)).chat._id }),
-  acceptConnection: async (userId) => ({ status: 'connected', chatId: (await api.createDirectChat(userId)).chat._id }),
+  connectUser: async (userId) => {
+    const uid = currentUid();
+    if (userId === uid) throw new Error('You cannot connect with yourself.');
+    await updateDoc(doc(firestore, 'users', uid), { connections: arrayUnion(userId) });
+    const { chat } = await api.createDirectChat(userId);
+    return { status: 'connected', chatId: chat._id, chat };
+  },
+  acceptConnection: async (userId) => api.connectUser(userId),
   followUser: async (userId) => {
     const uid = currentUid();
     const snap = await getDoc(doc(firestore, 'users', uid));

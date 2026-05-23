@@ -1,85 +1,94 @@
+import { useEffect, useState } from 'react';
+import { Eye, EyeOff, Loader2, Lock, Mail, User, UserPlus } from 'lucide-react';
+import { emailLogin, emailSignup, googleLogin, verifyEmailWithCode } from '../firebase.js';
+import { mapAuthError, isValidEmail } from '../utils/authErrors.js';
+import { success as toastSuccess } from '../utils/toast.js';
+import AuthAlert from './auth/AuthAlert.jsx';
+import EmailVerificationPanel from './auth/EmailVerificationPanel.jsx';
+import ForgotPasswordModal from './auth/ForgotPasswordModal.jsx';
 
-import { useState } from 'react';
-import { Mail, Phone, Eye, EyeOff, User, Lock, UserPlus } from 'lucide-react';
-import { completePhoneLogin, emailLogin, emailSignup, googleLogin, phoneLogin } from '../firebase.js';
-
-const mapAuthError = (err) => {
-  const code = err?.code || '';
-  if (code === 'auth/popup-blocked') return 'Popup blocked. Trying redirect sign-in...';
-  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') return 'Invalid email or password.';
-  if (code === 'auth/email-already-in-use') return 'This email is already registered.';
-  if (code === 'auth/too-many-requests') return 'Too many attempts. Please wait and try again.';
-  if (code === 'auth/network-request-failed') return 'Network error. Check your connection.';
-  if (code === 'auth/unauthorized-domain') return 'This domain is not authorized in Firebase. Add it under Authentication → Settings → Authorized domains.';
-  return err?.message || 'Authentication failed.';
-};
+const PENDING_SIGNUP_KEY = 'pendingSignupProfile';
 
 export default function AuthScreen() {
+  const [view, setView] = useState('login');
   const [mode, setMode] = useState('login');
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneName, setPhoneName] = useState('');
-  const [phoneUsername, setPhoneUsername] = useState('');
-  const [phoneEmail, setPhoneEmail] = useState('');
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [confirmation, setConfirmation] = useState(null);
-  const [error, setError] = useState('');
+  const [verifyEmail, setVerifyEmail] = useState('');
+  const [verifyPassword, setVerifyPassword] = useState('');
+  const [alert, setAlert] = useState({ type: 'error', message: '' });
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
+
+  const clearAlert = () => setAlert({ type: 'error', message: '' });
+  const showError = (message) => setAlert({ type: 'error', message });
+  const showInfo = (message) => setAlert({ type: 'info', message });
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oobCode = params.get('oobCode');
+    const mode = params.get('mode');
+    if (!oobCode || mode !== 'verifyEmail') return;
+
+    (async () => {
+      setBusy(true);
+      try {
+        await verifyEmailWithCode(oobCode);
+        window.history.replaceState({}, '', window.location.pathname);
+        toastSuccess('Email verified! You can sign in now.');
+        setView('login');
+        setMode('login');
+        showInfo('Email verified successfully. Sign in to continue.');
+      } catch (err) {
+        showError(mapAuthError(err));
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, []);
+
+  const switchMode = (next) => {
+    setMode(next);
+    clearAlert();
+  };
 
   const submitEmail = async (event) => {
     event.preventDefault();
     setBusy(true);
-    setError('');
+    clearAlert();
 
     try {
-      if (!email.trim()) throw new Error('Email is required.');
-      if (!password) throw new Error('Password is required.');
+      if (!isValidEmail(email)) throw Object.assign(new Error('Invalid email'), { code: 'auth/invalid-email' });
+      if (!password || password.length < 6) throw Object.assign(new Error('Weak password'), { code: 'auth/weak-password' });
+
       if (mode === 'signup') {
         if (!name.trim()) throw new Error('Name is required.');
         if (!username.trim()) throw new Error('Username is required.');
-        localStorage.setItem('pendingPhoneProfile', JSON.stringify({ name: name.trim(), username: username.trim(), email: email.trim() }));
-        await emailSignup({ email, password, displayName: name });
-      } else {
-        await emailLogin(email, password);
-      }
-    } catch (err) {
-      setError(mapAuthError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
 
-  const submitPhone = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-
-    try {
-      if (!phoneName.trim()) throw new Error('Name is required for phone login.');
-      if (!phoneUsername.trim()) throw new Error('Username is required for phone login.');
-      if (!phone.trim()) throw new Error('Phone number is required for phone login.');
-
-      if (!confirmation) {
         localStorage.setItem(
-          'pendingPhoneProfile',
-          JSON.stringify({
-            name: phoneName.trim(),
-            username: phoneUsername.trim(),
-            phone: phone.trim(),
-            email: phoneEmail.trim()
-          })
+          PENDING_SIGNUP_KEY,
+          JSON.stringify({ name: name.trim(), username: username.trim(), email: email.trim() })
         );
-        const result = await phoneLogin(phone);
-        setConfirmation(result);
+
+        await emailSignup({ email, password, displayName: name });
+        setVerifyEmail(email.trim());
+        setVerifyPassword(password);
+        setView('verify');
+        showInfo('Account created! Check your email for the verification link.');
       } else {
-        await completePhoneLogin(confirmation, otp, phoneName.trim());
+        const credential = await emailLogin(email, password);
+        if (!credential.user.emailVerified) {
+          setVerifyEmail(email.trim());
+          setVerifyPassword(password);
+          setView('verify');
+          showInfo('Please verify your email before continuing.');
+        }
       }
     } catch (err) {
-      setError(mapAuthError(err));
+      showError(mapAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -87,193 +96,176 @@ export default function AuthScreen() {
 
   const submitGoogle = async () => {
     setBusy(true);
-    setError('');
+    clearAlert();
     try {
       const result = await googleLogin();
-      if (result?.redirecting) {
-        setError('Redirecting to Google sign-in...');
-      }
+      if (result?.redirecting) showInfo('Redirecting to Google sign-in…');
     } catch (err) {
-      setError(mapAuthError(err));
+      showError(mapAuthError(err));
     } finally {
       setBusy(false);
     }
   };
 
+  if (view === 'verify') {
+    return (
+      <main className="grid min-h-dvh place-items-center px-3 py-6 sm:px-4 bg-gradient-to-br from-aqua-25 via-white to-aqua-50">
+        <EmailVerificationPanel
+          email={verifyEmail}
+          password={verifyPassword}
+          onVerified={() => window.location.reload()}
+          onBackToLogin={() => {
+            setView('login');
+            setMode('login');
+            clearAlert();
+          }}
+        />
+      </main>
+    );
+  }
+
   return (
-    <main className="grid min-h-dvh place-items-center px-3 py-4 sm:px-4 bg-gradient-to-br from-aqua-25 via-white to-aqua-50">
-      <section className="w-full max-w-md rounded-3xl border border-white/60 bg-white/80 p-6 sm:p-8 shadow-soft-lg backdrop-blur-sm">
-        {/* Logo & Subtitle */}
+    <main className="grid min-h-dvh place-items-center px-3 py-6 sm:px-4 bg-gradient-to-br from-aqua-25 via-white to-aqua-50">
+      <section className="w-full max-w-md rounded-3xl border border-white/60 bg-white/85 p-6 shadow-soft-xl backdrop-blur-md sm:p-8">
         <div className="mb-6 text-center">
-          <h1 className="text-3xl sm:text-4xl font-black text-cyan-950 mb-1 tracking-tight">AquaChat</h1>
-          <p className="text-xs sm:text-sm text-slate-500 font-medium">Stay connected. Stay informed.</p>
+          <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-cyan-500 to-aqua-400 text-2xl font-black text-white shadow-lg shadow-cyan-200/40">
+            A
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-black text-cyan-950 tracking-tight">AquaChat</h1>
+          <p className="mt-1 text-xs sm:text-sm text-slate-500 font-medium">Stay connected. Stay informed.</p>
         </div>
 
-        {/* Tab Buttons */}
-        <div className="mb-6 flex rounded-2xl bg-aqua-100/40 border border-aqua-200/50 p-1">
+        <div className="mb-5 flex rounded-2xl border border-aqua-200/50 bg-aqua-100/40 p-1">
           <button
             type="button"
-            onClick={() => setMode('login')}
-            className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 rounded-2xl py-2 sm:py-2.5 text-xs sm:text-base font-bold transition duration-200 ${mode === 'login' ? 'bg-white text-cyan-950 shadow' : 'text-slate-500'}`}
+            onClick={() => switchMode('login')}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold transition ${
+              mode === 'login' ? 'bg-white text-cyan-950 shadow-sm' : 'text-slate-500'
+            }`}
           >
-            <User className="w-4 h-4 sm:w-5 sm:h-5" /> <span className="hidden sm:inline">Login</span>
+            <User className="h-4 w-4" />
+            Login
           </button>
           <button
             type="button"
-            onClick={() => setMode('signup')}
-            className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 rounded-2xl py-2 sm:py-2.5 text-xs sm:text-base font-bold transition duration-200 ${mode === 'signup' ? 'bg-white text-cyan-950 shadow' : 'text-slate-500'}`}
+            onClick={() => switchMode('signup')}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold transition ${
+              mode === 'signup' ? 'bg-white text-cyan-950 shadow-sm' : 'text-slate-500'
+            }`}
           >
-            <UserPlus className="w-4 h-4 sm:w-5 sm:h-5" /> <span className="hidden sm:inline">Sign up</span>
+            <UserPlus className="h-4 w-4" />
+            Sign up
           </button>
         </div>
 
-        {/* Email Form */}
-        <form onSubmit={submitEmail} className="space-y-3 sm:space-y-4 mb-6">
+        <form onSubmit={submitEmail} className="space-y-3">
           {mode === 'signup' && (
             <>
               <div className="relative">
+                <User className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-500" />
                 <input
                   value={name}
-                  onChange={(event) => setName(event.target.value)}
+                  onChange={(e) => setName(e.target.value)}
                   placeholder="Full name"
                   required
-                  className="w-full rounded-2xl border border-aqua-100/60 bg-white px-10 sm:px-12 py-2.5 sm:py-3 text-sm sm:text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft"
+                  autoComplete="name"
+                  className="w-full rounded-2xl border border-aqua-100/60 bg-white py-3 pl-11 pr-4 text-sm outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100"
                 />
-                <User className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-aqua-400 w-4 h-4 sm:w-5 sm:h-5" />
               </div>
               <div className="relative">
+                <User className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-500" />
                 <input
                   value={username}
-                  onChange={(event) => setUsername(event.target.value)}
+                  onChange={(e) => setUsername(e.target.value)}
                   placeholder="Username"
                   required
-                  className="w-full rounded-2xl border border-aqua-100/60 bg-white px-10 sm:px-12 py-2.5 sm:py-3 text-sm sm:text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft"
+                  autoComplete="username"
+                  className="w-full rounded-2xl border border-aqua-100/60 bg-white py-3 pl-11 pr-4 text-sm outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100"
                 />
-                <User className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-aqua-400 w-4 h-4 sm:w-5 sm:h-5" />
               </div>
             </>
           )}
+
           <div className="relative">
+            <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-500" />
             <input
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(e) => setEmail(e.target.value)}
               type="email"
-              placeholder="Email"
+              placeholder="Email address"
               required
-              className="w-full rounded-2xl border border-aqua-100/60 bg-white px-10 sm:px-12 py-2.5 sm:py-3 text-sm sm:text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft"
+              autoComplete="email"
+              className="w-full rounded-2xl border border-aqua-100/60 bg-white py-3 pl-11 pr-4 text-sm outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100"
             />
-            <Mail className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-aqua-400 w-4 h-4 sm:w-5 sm:h-5" />
           </div>
+
           <div className="relative">
+            <Lock className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-500" />
             <input
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(e) => setPassword(e.target.value)}
               type={showPassword ? 'text' : 'password'}
               placeholder="Password"
               required
-              className="w-full rounded-2xl border border-aqua-100/60 bg-white px-10 sm:px-12 py-2.5 sm:py-3 text-sm sm:text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft"
+              minLength={6}
+              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              className="w-full rounded-2xl border border-aqua-100/60 bg-white py-3 pl-11 pr-12 text-sm outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100"
             />
-            <Lock className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-aqua-400 w-4 h-4 sm:w-5 sm:h-5" />
             <button
               type="button"
               tabIndex={-1}
               onClick={() => setShowPassword((v) => !v)}
-              className="absolute right-3 sm:right-4 top-1/2 -translate-y-1/2 text-aqua-400 hover:text-cyan-500 transition"
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-cyan-500 transition hover:bg-aqua-50"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
             >
-              {showPassword ? <EyeOff className="w-4 h-4 sm:w-5 sm:h-5" /> : <Eye className="w-4 h-4 sm:w-5 sm:h-5" />}
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          <div className="flex items-center justify-between">
-            <span />
-            <a href="#" className="text-xs sm:text-sm font-medium text-cyan-500 hover:underline">Forgot password?</a>
-          </div>
+
+          {mode === 'login' && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setForgotOpen(true)}
+                className="text-xs font-semibold text-cyan-600 transition hover:text-cyan-800 hover:underline"
+              >
+                Forgot password?
+              </button>
+            </div>
+          )}
+
+          {alert.message && (
+            <AuthAlert type={alert.type} message={alert.message} onDismiss={clearAlert} />
+          )}
+
           <button
+            type="submit"
             disabled={busy}
-            className="flex w-full items-center justify-center gap-1.5 sm:gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-2.5 sm:py-3.5 font-bold text-white text-sm sm:text-base shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-60 disabled:shadow-none"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-200/50 transition hover:shadow-cyan-300/70 disabled:opacity-60"
           >
-            <Mail size={16} className="sm:w-5 sm:h-5" />
-            {mode === 'signup' ? 'Create account' : 'Login'}
+            {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Mail className="h-4 w-4" />}
+            {busy ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}
           </button>
         </form>
 
-        {/* Divider */}
-        <div className="my-6 flex items-center gap-3">
-          <div className="h-px flex-1 bg-aqua-200/50" />
-          <span className="text-xs font-bold text-slate-400">OR</span>
-          <div className="h-px flex-1 bg-aqua-200/50" />
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-aqua-200/60" />
+          <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">or</span>
+          <div className="h-px flex-1 bg-aqua-200/60" />
         </div>
 
-        {/* Google Button */}
         <button
           type="button"
           onClick={submitGoogle}
           disabled={busy}
-          className="w-full flex items-center justify-center gap-2 sm:gap-3 rounded-2xl border border-aqua-200/50 bg-white px-4 py-2.5 sm:py-3.5 font-bold text-slate-700 text-sm sm:text-base transition duration-200 hover:bg-aqua-50/60 disabled:opacity-60 disabled:cursor-not-allowed mb-2"
+          className="flex w-full items-center justify-center gap-3 rounded-2xl border border-aqua-200/60 bg-white py-3 text-sm font-bold text-slate-700 transition hover:bg-aqua-50/80 disabled:opacity-60"
         >
-          <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" className="w-4 h-4 sm:w-5 sm:h-5" />
+          <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="" className="h-5 w-5" />
           Continue with Google
         </button>
-
-        {/* Phone OTP Form (only for signup) */}
-        {mode === 'signup' && (
-          <form onSubmit={submitPhone} className="space-y-2 sm:space-y-4 rounded-2xl bg-gradient-to-br from-aqua-100/40 to-cyan-100/30 border border-aqua-200/40 p-3 sm:p-5 mt-4">
-            <div className="flex items-center gap-2.5 text-xs sm:text-sm font-bold text-cyan-950">
-              <Phone size={14} className="sm:w-4 sm:h-4 text-cyan-600" />
-              Phone OTP
-            </div>
-            <input
-              value={phoneName}
-              onChange={(event) => setPhoneName(event.target.value)}
-              placeholder="Full name"
-              required
-              className="w-full rounded-2xl border border-white/70 bg-white/90 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-cyan-300 focus:shadow-inner-soft"
-            />
-            <input
-              value={phoneUsername}
-              onChange={(event) => setPhoneUsername(event.target.value)}
-              placeholder="Username"
-              required
-              className="w-full rounded-2xl border border-white/70 bg-white/90 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-cyan-300 focus:shadow-inner-soft"
-            />
-            <input
-              value={phone}
-              onChange={(event) => setPhone(event.target.value)}
-              placeholder="+1 555 010 0000"
-              required
-              className="w-full rounded-2xl border border-white/70 bg-white/90 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-cyan-300 focus:shadow-inner-soft"
-            />
-            <input
-              value={phoneEmail}
-              onChange={(event) => setPhoneEmail(event.target.value)}
-              type="email"
-              placeholder="Email (optional)"
-              className="w-full rounded-2xl border border-white/70 bg-white/90 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-cyan-300 focus:shadow-inner-soft"
-            />
-            {confirmation && (
-              <input
-                value={otp}
-                onChange={(event) => setOtp(event.target.value)}
-                placeholder="OTP code"
-                required
-                className="w-full rounded-2xl border border-white/70 bg-white/90 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-cyan-300 focus:shadow-inner-soft"
-              />
-            )}
-            <button
-              disabled={busy}
-              className="w-full rounded-2xl bg-gradient-to-r from-cyan-600 to-cyan-700 px-4 py-2 sm:py-2.5 font-bold text-white text-xs sm:text-sm transition duration-200 hover:from-cyan-700 hover:to-cyan-800 disabled:opacity-60"
-            >
-              {confirmation ? 'Verify OTP' : 'Send OTP'}
-            </button>
-          </form>
-        )}
-
-        {/* Error Message */}
-        {error && (
-          <div className="mt-6 rounded-2xl bg-gradient-to-r from-rose-100/60 to-rose-50/60 border border-rose-200/50 px-4 py-3">
-            <p className="text-xs sm:text-sm font-medium text-rose-700">{error}</p>
-          </div>
-        )}
       </section>
+
+      {forgotOpen && <ForgotPasswordModal onClose={() => setForgotOpen(false)} />}
     </main>
   );
 }

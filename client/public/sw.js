@@ -1,9 +1,11 @@
-const CACHE_VERSION = 'aquachat-v4';
+const CACHE_VERSION = 'aquachat-v5';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/offline.html',
   '/manifest.webmanifest',
+  '/icon-192.png',
+  '/icon-512.png',
   '/app-icon.svg',
   '/shortcut-chat.svg',
   '/shortcut-people.svg'

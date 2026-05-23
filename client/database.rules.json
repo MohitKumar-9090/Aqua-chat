@@ -14,13 +14,21 @@
         }
       }
     },
+    "userIncoming": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$callId": {
+          ".write": "auth != null"
+        }
+      }
+    },
     "calls": {
       "$callId": {
-        ".read": "auth != null && (data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
+        ".read": "auth != null && (!data.exists() || data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
         ".write": "auth != null && (!data.exists() || data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
         "candidates": {
           "$uid": {
-            ".read": "auth != null",
+            ".read": "auth != null && (root.child('calls').child($callId).child('from').val() === auth.uid || root.child('calls').child($callId).child('to').val() === auth.uid)",
             ".write": "auth != null && auth.uid === $uid"
           }
         }

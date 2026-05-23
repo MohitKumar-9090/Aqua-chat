@@ -1,18 +1,22 @@
-export const registerServiceWorker = () => {
-  if (import.meta.env.DEV) {
-    navigator.serviceWorker?.getRegistrations?.().then((registrations) => {
-      registrations.forEach((registration) => registration.unregister());
-    });
-    return;
+const isProd = import.meta.env.PROD;
+
+export const registerServiceWorker = async () => {
+  if (!isProd) {
+    const registrations = await navigator.serviceWorker?.getRegistrations?.();
+    registrations?.forEach((registration) => registration.unregister());
+    return null;
   }
 
-  if (!('serviceWorker' in navigator)) return;
+  if (!('serviceWorker' in navigator)) return null;
 
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((error) => {
-      console.error(`Service worker registration failed: ${error.message}`);
-    });
-  });
+  try {
+    const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    registration.update().catch(() => {});
+    return registration;
+  } catch (error) {
+    console.error(`Service worker registration failed: ${error.message}`);
+    return null;
+  }
 };
 
 export const requestNotificationPermission = async () => {
@@ -28,3 +32,6 @@ export const registerBackgroundSync = async () => {
   await registration.sync.register('aquachat-background-sync');
   return true;
 };
+
+export const isPwaDisplayMode = () =>
+  window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;

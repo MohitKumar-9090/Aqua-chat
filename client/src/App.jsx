@@ -1,37 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ArrowLeft,
-  BadgeCheck,
-  Bell,
-  CheckCheck,
-  Download,
-  Image,
-  Camera,
-  Home,
-  KeyRound,
-  LogOut,
-  MessageCircle,
-  Mic,
-  MoreVertical,
-  Paperclip,
-  Phone,
-  Plus,
-  Search,
-  Send,
-  Settings,
-  Smile,
-  UserCheck,
-  UserPlus,
-  Users,
-  Video,
-  WifiOff,
-  X
-} from 'lucide-react';
+import { Home, LogOut, Search, Settings, Users, WifiOff } from 'lucide-react';
 import AuthScreen from './components/AuthScreen.jsx';
+import EmailVerificationPanel from './components/auth/EmailVerificationPanel.jsx';
 import Avatar from './components/Avatar.jsx';
+import LoadingSpinner from './components/LoadingSpinner.jsx';
 import ToastContainer from './components/ToastContainer.jsx';
-import { api, setTyping as setFirebaseTyping, subscribeChats, subscribeMessages, subscribePresence, subscribeTyping } from './api.js';
-import { changePassword, initError } from './firebase.js';
+import { api, mergeWithPendingMessages, setTyping as setFirebaseTyping, subscribeChats, subscribeMessages, subscribePresence, subscribeTyping } from './api.js';
+import { error as toastError, success as toastSuccess } from './utils/toast.js';
+import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
 import { registerBackgroundSync, requestNotificationPermission } from './pwa.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
@@ -45,34 +21,19 @@ import {
   subscribeIceCandidates,
   subscribeIncomingCalls
 } from './utils/calls.js';
-
-const emptyRecorder = { recording: false, stream: null, mediaRecorder: null, chunks: [] };
-
-function formatTime(value) {
-  if (!value) return '';
-  return new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
-}
-
-function directPeer(chat, me) {
-  return chat?.participants?.find((participant) => participant.user._id !== me?._id)?.user;
-}
-
-function chatTitle(chat, me) {
-  if (!chat) return 'AquaChat';
-  if (chat.type === 'group') return chat.name;
-  const peer = directPeer(chat, me);
-  return peer?.displayName || peer?.email || peer?.phoneNumber || 'New chat';
-}
-
-function chatImage(chat, me) {
-  if (chat?.type === 'group') return chat.avatarUrl;
-  return directPeer(chat, me)?.photoURL;
-}
-
-function statusText(user) {
-  if (user?.isOnline) return 'online';
-  return user?.lastSeen ? `last seen ${formatTime(user.lastSeen)}` : 'offline';
-}
+import { prefetchIceServers } from './utils/iceServers.js';
+import { chatImage, chatTitle, directPeer, formatTime, statusText } from './utils/chat.js';
+import InstallAppPrompt from './features/install/InstallAppPrompt.jsx';
+import EmptyState from './features/chat/EmptyState.jsx';
+import PeopleSearchRow from './features/people/PeopleSearchRow.jsx';
+import StatusTray from './features/status/StatusTray.jsx';
+import ChatHeader from './features/chat/ChatHeader.jsx';
+import MessageList from './features/chat/MessageList.jsx';
+import Composer from './features/chat/Composer.jsx';
+import GroupModal from './features/settings/GroupModal.jsx';
+import GroupStrip from './features/chat/GroupStrip.jsx';
+import ProfileSettings from './features/settings/ProfileSettings.jsx';
+import CallModal from './features/calls/CallModal.jsx';
 
 export default function App() {
   if (initError) {
@@ -106,10 +67,25 @@ export default function App() {
 
   if (authState.loading) {
     return (
-      <main className="grid min-h-screen place-items-center">
-        <div className="h-16 w-16 animate-spin rounded-full border-4 border-aqua-100 border-t-aqua-500" />
+      <>
+        <LoadingSpinner />
         <ToastContainer />
-      </main>
+      </>
+    );
+  }
+
+  if (authState.needsEmailVerification) {
+    return (
+      <>
+        <main className="grid min-h-dvh place-items-center px-3 py-6 bg-gradient-to-br from-aqua-25 via-white to-aqua-50">
+          <EmailVerificationPanel
+            email={authState.firebaseUser?.email || ''}
+            onVerified={() => window.location.reload()}
+            onBackToLogin={authState.logout}
+          />
+        </main>
+        <ToastContainer />
+      </>
     );
   }
 
@@ -164,6 +140,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callState, setCallState] = useState(null);
   const [activeCallId, setActiveCallId] = useState(null);
+  const [connectingUserId, setConnectingUserId] = useState(null);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [showInstall, setShowInstall] = useState(false);
   const [isStandalone, setIsStandalone] = useState(() => window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone);
@@ -175,7 +152,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const callUnsubscribersRef = useRef([]);
   const hasAutoSelectedChatRef = useRef(false);
   const selectedChatRef = useRef(selectedChat);
+  const activeMessagesChatRef = useRef(null);
+  const callStateRef = useRef(callState);
   selectedChatRef.current = selectedChat;
+  callStateRef.current = callState;
 
   const selectedPeer = useMemo(() => directPeer(selectedChat, profile), [selectedChat, profile]);
 
@@ -220,6 +200,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   useEffect(() => {
     refresh().catch(console.error);
+    prefetchIceServers();
   }, []);
 
   const presenceRef = useRef({});
@@ -332,20 +313,18 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
 
     const chatId = selectedChat._id;
+    activeMessagesChatRef.current = chatId;
     setMessages([]);
     setTyping(null);
 
     const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
-      setMessages((current) => {
-        const pending = current.filter((item) => item.pending);
-        const merged = new Map();
-        [...nextMessages, ...pending].forEach((item) => merged.set(item._id, item));
-        return [...merged.values()].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-      });
+      if (activeMessagesChatRef.current !== chatId) return;
+      setMessages((current) => mergeWithPendingMessages(nextMessages, current));
       api.seen(chatId).catch(console.error);
     });
     const unsubscribeTyping = subscribeTyping(chatId, setTyping);
     return () => {
+      if (activeMessagesChatRef.current === chatId) activeMessagesChatRef.current = null;
       unsubscribeMessages?.();
       unsubscribeTyping?.();
     };
@@ -362,20 +341,46 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setUsers((current) => current.map((user) => (user._id === userId ? { ...user, ...patch } : user)));
   };
 
+  const openChat = (chat) => {
+    setChats((current) => [chat, ...current.filter((item) => item._id !== chat._id)]);
+    setSelectedChat(chat);
+    setPanel('chats');
+  };
+
   const connectWithUser = async (user) => {
-    const data = await api.connectUser(user._id);
-    updateUser(user._id, { connectionStatus: data.status });
-    if (data.status === 'connected') {
-      await refresh();
-    } else {
-      await loadUsers(query);
+    setConnectingUserId(user._id);
+    try {
+      const data = await api.connectUser(user._id);
+      updateUser(user._id, { connectionStatus: data.status, directChatId: data.chatId });
+      if (data.chat) {
+        openChat(data.chat);
+        toastSuccess(`Connected with ${user.displayName}`);
+      } else {
+        await refresh();
+      }
+    } catch (err) {
+      toastError(err.message || 'Could not connect with this user.');
+    } finally {
+      setConnectingUserId(null);
     }
   };
 
   const acceptUser = async (user) => {
-    const data = await api.acceptConnection(user._id);
-    updateUser(user._id, { connectionStatus: data.status, directChatId: data.chatId });
-    await refresh();
+    setConnectingUserId(user._id);
+    try {
+      const data = await api.acceptConnection(user._id);
+      updateUser(user._id, { connectionStatus: data.status, directChatId: data.chatId });
+      if (data.chat) {
+        openChat(data.chat);
+      } else {
+        await refresh();
+      }
+      toastSuccess(`Connected with ${user.displayName}`);
+    } catch (err) {
+      toastError(err.message || 'Could not accept connection.');
+    } finally {
+      setConnectingUserId(null);
+    }
   };
 
   const followUser = async (user) => {
@@ -422,12 +427,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     try {
       const { message } = await api.sendMessage({ chatId, ...payload });
-      setMessages((current) =>
-        current
-          .filter((item) => item._id !== tempId)
-          .concat(message)
-          .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
-      );
+      if (activeMessagesChatRef.current !== chatId) return;
+      setMessages((current) => mergeWithPendingMessages([message], current.filter((item) => item._id !== tempId)));
       setChats((current) =>
         current.map((chat) =>
           chat._id === chatId
@@ -437,6 +438,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       );
     } catch (error) {
       setMessages((current) => current.filter((item) => item._id !== tempId));
+      toastError(error.message || 'Message failed to send.');
       console.error(error);
     }
   };
@@ -470,50 +472,53 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null }) => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: callType === 'video'
-    });
-    attachLocalStream(stream, callType);
+    setCallState((current) => ({ ...current, preparing: true }));
 
-    const pc = createPeerConnection(
-      (remoteStream) => {
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
-      },
-      (candidate) => pushIceCandidate(callId, profile._id, candidate).catch(console.error)
-    );
+    try {
+      const [stream, pc] = await Promise.all([
+        navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' }),
+        createPeerConnection(
+          (remoteStream) => {
+            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+          },
+          (candidate) => pushIceCandidate(callId, profile._id, candidate).catch(console.error)
+        )
+      ]);
 
-    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-    peerConnectionRef.current = pc;
+      attachLocalStream(stream, callType);
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      peerConnectionRef.current = pc;
 
-    const remoteCandidates = subscribeIceCandidates(callId, remoteUid, (candidate) => {
-      if (!candidate || !peerConnectionRef.current) return;
-      peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
-    });
-    callUnsubscribersRef.current.push(remoteCandidates);
+      const roomListener = subscribeCallRoom(callId, async (room) => {
+        if (!room || !peerConnectionRef.current) return;
+        if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
+          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
+          await peerConnectionRef.current.flushRemoteIceCandidates();
+        }
+        if (room.status === 'ended') endCall();
+      });
+      callUnsubscribersRef.current.push(roomListener);
 
-    if (isCaller) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await startOutgoingCall({ callId, from: profile._id, to: remoteUid, callType, offer });
-    } else if (remoteOffer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await sendCallAnswer(callId, answer);
+      const remoteCandidates = subscribeIceCandidates(callId, remoteUid, (candidate) => {
+        if (!candidate || !peerConnectionRef.current) return;
+        peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
+      });
+      callUnsubscribersRef.current.push(remoteCandidates);
+
+      if (isCaller) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await startOutgoingCall({ callId, from: profile._id, to: remoteUid, callType, offer });
+      } else if (remoteOffer) {
+        await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
+        await pc.flushRemoteIceCandidates();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await sendCallAnswer(callId, profile._id, answer);
+      }
+    } finally {
+      setCallState((current) => (current ? { ...current, preparing: false } : current));
     }
-
-    const roomListener = subscribeCallRoom(callId, async (room) => {
-      if (!room || !peerConnectionRef.current) return;
-      if (!isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
-      }
-      if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
-      }
-      if (room.status === 'ended') endCall();
-    });
-    callUnsubscribersRef.current.push(roomListener);
   };
 
   const startCall = async (callType) => {
@@ -534,6 +539,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       await setupPeer({ callId, remoteUid: selectedPeer._id, callType, isCaller: true });
     } catch (error) {
       console.error(error);
+      toastError(error.message || 'Could not start call. Check microphone/camera permissions.');
       endCall();
     }
   };
@@ -551,24 +557,28 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       setCallState((current) => ({ ...current, incoming: false }));
     } catch (error) {
       console.error(error);
+      toastError(error.message || 'Could not answer call.');
       endCall();
     }
   };
 
   const endCall = () => {
+    const endingCallId = activeCallId || callState?.callId;
+    const from = callState?.from || profile._id;
+    const to = callState?.to || selectedPeer?._id;
     cleanupCallListeners();
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
-    if (activeCallId) endCallRoom(activeCallId).catch(console.error);
+    if (endingCallId && to) endCallRoom(endingCallId, from, to).catch(console.error);
     setActiveCallId(null);
     setCallState(null);
   };
 
   useEffect(() => {
     const unsubscribe = subscribeIncomingCalls(profile._id, async (incoming) => {
-      if (!incoming || callState?.active) return;
+      if (!incoming || callStateRef.current?.active) return;
       const caller = users.find((user) => user._id === incoming.from) || { _id: incoming.from, displayName: 'Incoming call' };
       setActiveCallId(incoming.id);
       setCallState({
@@ -583,7 +593,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       });
     });
     return unsubscribe;
-  }, [profile._id, users, callState?.active]);
+  }, [profile._id, users]);
 
   return (
     <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4">
@@ -694,6 +704,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   <PeopleSearchRow
                     key={user._id}
                     user={user}
+                    connecting={connectingUserId === user._id}
                     onConnect={connectWithUser}
                     onAccept={acceptUser}
                     onFollow={followUser}
@@ -748,570 +759,5 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       {callState?.active && <CallModal state={callState} localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} onAnswer={answerCall} onEnd={endCall} />}
       {showInstall && !isStandalone && <InstallAppPrompt canInstall={Boolean(installPrompt)} onInstall={installApp} onClose={() => setShowInstall(false)} />}
     </main>
-  );
-}
-
-function InstallAppPrompt({ canInstall, onInstall, onClose }) {
-  const [notifications, setNotifications] = useState(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
-
-  const enableNotifications = async () => {
-    const permission = await requestNotificationPermission();
-    setNotifications(permission);
-  };
-
-  return (
-    <div className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+1rem)] z-50 mx-auto max-w-md animate-pop rounded-3xl border border-aqua-100 bg-white/95 p-4 shadow-soft-xl backdrop-blur">
-      <div className="flex items-start gap-3">
-        <img src="/app-icon.svg" alt="" className="h-12 w-12 rounded-2xl" loading="lazy" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="font-black text-cyan-950">Install AquaChat</h2>
-              <p className="mt-1 text-sm leading-5 text-slate-500">{canInstall ? 'Use AquaChat fullscreen with faster launches and offline access.' : 'Use your browser menu to add AquaChat to your home screen.'}</p>
-            </div>
-            <button type="button" onClick={onClose} className="rounded-xl p-2 text-slate-400 hover:bg-aqua-50" title="Close">
-              <X size={18} />
-            </button>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" onClick={onInstall} className="inline-flex items-center gap-2 rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-black text-white shadow-lg shadow-cyan-100 transition hover:bg-cyan-600">
-              <Download size={16} />
-              {canInstall ? 'Install App' : 'Got it'}
-            </button>
-            <button type="button" onClick={enableNotifications} className="inline-flex items-center gap-2 rounded-2xl bg-aqua-50 px-4 py-2 text-sm font-black text-cyan-800 transition hover:bg-aqua-100">
-              <Bell size={16} />
-              {notifications === 'granted' ? 'Notifications on' : 'Enable alerts'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="grid h-full place-items-center p-6">
-      <div className="text-center">
-        <div className="mx-auto mb-6 flex h-24 w-24 items-center justify-center rounded-3xl bg-gradient-to-br from-cyan-100 to-aqua-100 shadow-soft">
-          <Smile size={48} className="text-cyan-600" />
-        </div>
-        <h2 className="text-2xl font-black text-cyan-950 mb-2">Pick a conversation</h2>
-        <p className="text-slate-500 text-sm">Select a chat from the sidebar to get started</p>
-      </div>
-    </div>
-  );
-}
-
-function PeopleSearchRow({ user, onConnect, onAccept, onFollow, onMessage }) {
-  const connectionLabel = user.connectionStatus === 'connected'
-    ? 'Connected'
-    : user.connectionStatus === 'incoming'
-      ? 'Accept'
-      : user.connectionStatus === 'requested'
-        ? 'Requested'
-        : 'Connect';
-  const connectionIcon = user.connectionStatus === 'connected' ? UserCheck : UserPlus;
-  const ConnectionIcon = connectionIcon;
-  const canConnect = user.connectionStatus !== 'connected' && user.connectionStatus !== 'requested';
-  const preview = user.lastMessagePreview || user.email || user.phoneNumber || user.bio || statusText(user);
-
-  const handleConnect = () => {
-    if (user.connectionStatus === 'incoming') return onAccept(user);
-    if (canConnect) return onConnect(user);
-  };
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onMessage(user._id)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') onMessage(user._id);
-      }}
-      className="w-full cursor-pointer rounded-2xl border border-transparent p-3 text-left transition duration-200 hover:border-blush-100/50 hover:bg-blush-50/60"
-    >
-      <div className="flex items-start gap-3">
-        <Avatar user={user} online={user.isOnline} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <h3 className="truncate text-sm font-bold text-cyan-950">{user.displayName}</h3>
-            {user.verified && <BadgeCheck size={15} className="shrink-0 fill-cyan-500 text-white" />}
-            {user.unreadCount > 0 && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-rose-500 px-1.5 text-[11px] font-black text-white">{user.unreadCount}</span>}
-          </div>
-          <p className="truncate text-sm text-slate-500">@{user.username || 'username'} - {statusText(user)}</p>
-          <p className="truncate text-xs text-slate-400">{preview}</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                handleConnect();
-              }}
-              disabled={!canConnect && user.connectionStatus !== 'incoming'}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-black transition ${
-                user.connectionStatus === 'connected'
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : user.connectionStatus === 'requested'
-                    ? 'bg-slate-100 text-slate-500'
-                    : 'bg-cyan-500 text-white hover:bg-cyan-600'
-              } disabled:cursor-default`}
-            >
-              <ConnectionIcon size={14} />
-              {connectionLabel}
-            </button>
-            <button type="button" onClick={(event) => { event.stopPropagation(); onMessage(user._id); }} className="inline-flex items-center gap-1.5 rounded-xl bg-aqua-50 px-3 py-1.5 text-xs font-black text-cyan-800 transition hover:bg-aqua-100">
-              <MessageCircle size={14} />
-              Message
-            </button>
-            <button type="button" onClick={(event) => { event.stopPropagation(); onFollow(user); }} className="rounded-xl bg-blush-50 px-3 py-1.5 text-xs font-black text-rose-600 transition hover:bg-blush-100">
-              {user.isFollowing ? 'Following' : user.followsMe ? 'Follow back' : 'Follow'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatusTray({ statuses, onCreate, me }) {
-  const inputRef = useRef(null);
-  const grouped = statuses.slice(0, 12);
-
-  return (
-    <div className="flex gap-3 overflow-x-auto border-b border-aqua-100/40 px-3 py-4 scrollbar-hide">
-      <button onClick={() => inputRef.current?.click()} className="flex w-16 shrink-0 flex-col items-center gap-2">
-        <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-cyan-500 to-aqua-400 text-white shadow-lg shadow-cyan-200/50 transition hover:shadow-cyan-300/70">
-          <Plus size={22} />
-        </div>
-        <span className="w-full truncate text-xs font-bold text-cyan-900 text-center">Status</span>
-        <input ref={inputRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => onCreate(e.target.files?.[0])} />
-      </button>
-      <button onClick={() => onCreate()} className="flex w-16 shrink-0 flex-col items-center gap-2">
-        <Avatar user={me} size="lg" />
-        <span className="w-full truncate text-xs font-bold text-cyan-900 text-center">Text</span>
-      </button>
-      {grouped.map((status) => (
-        <button 
-          key={status._id} 
-          onClick={() => api.markStatusSeen(status._id)} 
-          className="flex w-16 shrink-0 flex-col items-center gap-2 transition duration-200 hover:scale-105"
-        >
-          <div className="rounded-2xl bg-gradient-to-br from-cyan-400 to-aqua-300 p-1 ring-2 ring-cyan-400/30">
-            <Avatar user={status.user} size="lg" />
-          </div>
-          <span className="w-full truncate text-xs font-bold text-cyan-900 text-center">{status.user.displayName}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ChatHeader({ chat, me, typing, onBack, onAudio, onVideo }) {
-  const peer = directPeer(chat, me);
-
-  return (
-    <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-aqua-100/40 bg-white/90 px-2 py-3 backdrop-blur-sm sm:gap-3 sm:px-3 sm:py-4">
-      <button type="button" onClick={onBack} aria-label="Back to chats" className="rounded-2xl p-2.5 text-cyan-700 transition duration-200 hover:bg-aqua-100/60 lg:hidden">
-        <ArrowLeft size={22} />
-      </button>
-      <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={peer?.isOnline} />
-      <div className="min-w-0 flex-1">
-        <h2 className="truncate font-black text-cyan-950 text-sm">{chatTitle(chat, me)}</h2>
-        <p className="truncate text-xs font-medium text-slate-500">{typing ? `${typing.displayName} typing...` : chat.type === 'group' ? `${chat.participants.length} members` : statusText(peer)}</p>
-      </div>
-      {chat.type === 'direct' && (
-        <>
-          <button onClick={onAudio} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Voice call">
-            <Phone size={18} />
-          </button>
-          <button onClick={onVideo} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Video call">
-            <Video size={18} />
-          </button>
-        </>
-      )}
-      <button className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="More">
-        <MoreVertical size={18} />
-      </button>
-    </header>
-  );
-}
-
-function MessageList({ messages, me }) {
-  const bottomRef = useRef(null);
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
-    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  return (
-    <div ref={containerRef} className="message-texture min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-6 sm:py-6">
-      <div className="mx-auto flex max-w-3xl flex-col gap-2 sm:gap-3">
-        {messages.map((message) => {
-          const mine = message.sender?._id === me._id || message.senderId === me._id;
-          return (
-            <div key={message._id} className={`flex animate-floatIn ${mine ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[88%] sm:max-w-[85%] rounded-2xl px-4 py-2.5 shadow-soft sm:px-5 sm:py-3 ${mine ? 'rounded-br-md bg-gradient-to-br from-cyan-500 to-aqua-400 text-white' : 'rounded-bl-md border border-aqua-100/60 bg-white text-slate-800'} ${message.pending ? 'opacity-80' : ''}`}>
-                {!mine && <p className="mb-1.5 text-xs font-black text-cyan-600">{message.sender?.displayName}</p>}
-                {message.mediaUrl && <MediaMessage message={message} />}
-                {message.body && <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>}
-                <div className={`mt-2 flex items-center justify-end gap-1.5 text-xs ${mine ? 'text-cyan-50' : 'text-slate-400'}`}>
-                  {formatTime(message.createdAt)}
-                  {mine && <CheckCheck size={13} className={message.status === 'seen' ? 'text-cyan-100' : 'text-cyan-200'} />}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
-      </div>
-    </div>
-  );
-}
-
-function MediaMessage({ message }) {
-  if (message.type === 'image') return <img src={message.mediaUrl} alt="" className="mb-2 max-h-72 rounded-2xl object-cover" />;
-  if (message.type === 'video') return <video src={message.mediaUrl} controls className="mb-2 max-h-72 rounded-2xl" />;
-  return <audio src={message.mediaUrl} controls className="mb-2 w-64 max-w-full" />;
-}
-
-function Composer({ chat, onSend, onUpload, isMobile }) {
-  const [text, setText] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [recorder, setRecorder] = useState(emptyRecorder);
-  const fileRef = useRef(null);
-  const typingTimerRef = useRef(null);
-
-  const type = () => {
-    setFirebaseTyping(chat._id, true).catch(console.error);
-    clearTimeout(typingTimerRef.current);
-    typingTimerRef.current = setTimeout(() => setFirebaseTyping(chat._id, false).catch(console.error), 700);
-  };
-
-  const submit = (event) => {
-    event.preventDefault();
-    if (!text.trim()) return;
-    onSend({ type: 'text', body: text.trim() });
-    setText('');
-  };
-
-  const uploadFile = async (file) => {
-    if (!file) return;
-    setUploading(true);
-    try {
-      const uploaded = await onUpload(file);
-      const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'audio';
-      onSend({ type: kind, mediaUrl: uploaded.url, cloudinaryPublicId: uploaded.publicId, duration: uploaded.duration || 0 });
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const toggleRecord = async () => {
-    if (recorder.recording) {
-      recorder.mediaRecorder.stop();
-      return;
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mediaRecorder = new MediaRecorder(stream);
-    const chunks = [];
-    mediaRecorder.ondataavailable = (event) => chunks.push(event.data);
-    mediaRecorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
-      stream.getTracks().forEach((track) => track.stop());
-      setRecorder(emptyRecorder);
-      await uploadFile(file);
-    };
-    mediaRecorder.start();
-    setRecorder({ recording: true, stream, mediaRecorder, chunks });
-  };
-
-  return (
-    <form
-      onSubmit={submit}
-      className={`composer-keyboard-safe sticky bottom-0 z-20 shrink-0 border-t border-aqua-100/40 bg-white/95 px-2 py-3 backdrop-blur-sm sm:px-3 sm:py-4 ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+0.25rem)]' : ''}`}
-    >
-      <div className="mx-auto flex max-w-3xl items-end gap-1.5 sm:gap-2.5">
-        <button type="button" className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Emoji">
-          <Smile size={20} />
-        </button>
-        <button type="button" onClick={() => fileRef.current?.click()} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Attach">
-          <Paperclip size={20} />
-        </button>
-        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(e) => uploadFile(e.target.files?.[0])} />
-        <input
-          value={text}
-          onChange={(e) => { setText(e.target.value); type(); }}
-          placeholder="Message..."
-          enterKeyHint="send"
-          className="min-w-0 flex-1 rounded-2xl border border-aqua-100/60 bg-white px-4 py-2.5 text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft sm:px-5 sm:py-3 sm:text-sm"
-        />
-        <button 
-          type="button" 
-          onClick={toggleRecord} 
-          className={`rounded-2xl p-2.5 transition duration-200 ${recorder.recording ? 'bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-200/50' : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'}`} 
-          title="Voice note"
-        >
-          <Mic size={20} />
-        </button>
-        <button
-          type="submit"
-          disabled={uploading || !text.trim()}
-          className="rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 p-2.5 text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-60 disabled:shadow-none"
-          title="Send"
-        >
-          {uploading ? <Image size={20} className="animate-pulse" /> : <Send size={20} />}
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function GroupModal({ users, onClose, onCreated }) {
-  const [name, setName] = useState('');
-  const [selected, setSelected] = useState([]);
-
-  const toggle = (id) => {
-    setSelected((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
-  };
-
-  const submit = async (event) => {
-    event.preventDefault();
-    const { chat } = await api.createGroupChat({ name, memberIds: selected });
-    onCreated(chat);
-  };
-
-  return (
-    <div className="fixed inset-0 z-30 grid place-items-end bg-gradient-to-tr from-cyan-950/40 to-aqua-950/20 p-3 backdrop-blur-sm sm:place-items-center">
-      <form onSubmit={submit} className="w-full max-w-md animate-pop rounded-3xl border border-white/60 bg-white/95 p-6 shadow-soft-lg backdrop-blur-sm">
-        <div className="mb-6 flex items-center justify-between">
-          <h2 className="text-xl font-black text-cyan-950">New group</h2>
-          <button type="button" onClick={onClose} className="rounded-2xl p-2 text-slate-500 transition duration-200 hover:bg-aqua-100/60"><X size={20} /></button>
-        </div>
-        <input 
-          value={name} 
-          onChange={(e) => setName(e.target.value)} 
-          placeholder="Group name" 
-          className="mb-4 w-full rounded-2xl border border-aqua-100/60 bg-white px-5 py-3 text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft" 
-        />
-        <div className="max-h-72 overflow-y-auto space-y-1 mb-6">
-          {users.map((user) => (
-            <label key={user._id} className="flex cursor-pointer items-center gap-3 rounded-2xl p-3 transition duration-200 hover:bg-aqua-50/60">
-              <input type="checkbox" checked={selected.includes(user._id)} onChange={() => toggle(user._id)} className="h-4 w-4 accent-cyan-500 rounded" />
-              <Avatar user={user} size="sm" />
-              <span className="font-bold text-cyan-950 text-sm">{user.displayName}</span>
-            </label>
-          ))}
-        </div>
-        <button 
-          className="w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 py-3 font-bold text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-50 disabled:shadow-none" 
-          disabled={!name.trim()}
-        >
-          Create
-        </button>
-      </form>
-    </div>
-  );
-}
-
-function GroupStrip({ chat, me, users, onRefresh }) {
-  const amAdmin = chat.participants.some((participant) => participant.user._id === me._id && participant.role === 'admin');
-  if (!amAdmin) return null;
-
-  const addable = users.filter((user) => !chat.participants.some((participant) => participant.user._id === user._id));
-
-  return (
-    <div className="hidden border-t border-aqua-100/40 bg-gradient-to-t from-aqua-25/50 to-white/95 px-4 py-3 lg:block backdrop-blur-sm">
-      <div className="mx-auto flex max-w-3xl items-center gap-2.5 overflow-x-auto scrollbar-hide">
-        {addable.slice(0, 8).map((user) => (
-          <button 
-            key={user._id} 
-            onClick={async () => { await api.addMembers(chat._id, [user._id]); await onRefresh(); }} 
-            className="shrink-0 rounded-2xl bg-gradient-to-r from-aqua-100/60 to-cyan-100/50 px-4 py-2.5 text-xs font-bold text-cyan-700 transition duration-200 hover:from-aqua-100/80 hover:to-cyan-100/70 border border-aqua-200/40"
-          >
-            + {user.displayName}
-          </button>
-        ))}
-        {chat.participants.filter((participant) => participant.user._id !== me._id).map((participant) => (
-          <button 
-            key={participant.user._id} 
-            onClick={async () => { await api.removeMember(chat._id, participant.user._id); await onRefresh(); }} 
-            className="shrink-0 rounded-2xl bg-gradient-to-r from-rose-100/60 to-blush-100/50 px-4 py-2.5 text-xs font-bold text-rose-600 transition duration-200 hover:from-rose-100/80 hover:to-blush-100/70 border border-rose-200/40"
-          >
-            ✕ {participant.user.displayName}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ProfileSettings({ firebaseUser, profile, setProfile, onClose }) {
-  const [form, setForm] = useState({
-    displayName: profile.displayName || '',
-    username: profile.username || '',
-    bio: profile.bio || '',
-    photoURL: profile.photoURL || ''
-  });
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-  const fileRef = useRef(null);
-  const canChangePassword = firebaseUser?.providerData?.some((provider) => provider.providerId === 'password');
-
-  const updateField = (key, value) => {
-    setForm((current) => ({ ...current, [key]: value }));
-  };
-
-  const uploadPhoto = async (file) => {
-    if (!file) return;
-    setBusy(true);
-    setMessage('');
-    try {
-      const uploaded = await api.upload(file);
-      updateField('photoURL', uploaded.url);
-      const { user } = await api.updateProfile({ profilePic: uploaded.url });
-      setProfile(user);
-      setForm((current) => ({ ...current, photoURL: user.photoURL || uploaded.url }));
-      setMessage('Profile picture updated');
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveProfile = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setMessage('');
-    try {
-      const { user } = await api.updateProfile({
-        name: form.displayName,
-        username: form.username,
-        profilePic: form.photoURL,
-        bio: form.bio
-      });
-      setProfile(user);
-
-      if (password && canChangePassword) {
-        await changePassword(firebaseUser, password);
-        setPassword('');
-      }
-
-      setMessage('Profile saved');
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-30 grid place-items-end bg-gradient-to-tr from-cyan-950/40 to-aqua-950/20 p-3 backdrop-blur-sm sm:place-items-center">
-      <form onSubmit={saveProfile} className="w-full max-w-md animate-pop rounded-3xl border border-white/60 bg-white/95 p-6 shadow-soft-lg backdrop-blur-sm">
-        <div className="mb-6 flex items-center justify-between">
-          <h2 className="text-xl font-black text-cyan-950">Profile</h2>
-          <button type="button" onClick={onClose} className="rounded-2xl p-2 text-slate-500 transition duration-200 hover:bg-aqua-100/60">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="mb-6 flex items-center gap-4">
-          <Avatar name={form.displayName} image={form.photoURL} size="xl" />
-          <div className="min-w-0 flex-1">
-            <button type="button" onClick={() => fileRef.current?.click()} className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-rose-100 to-rose-50 px-4 py-2.5 text-sm font-bold text-rose-600 transition duration-200 hover:bg-gradient-to-r hover:from-rose-200 hover:to-rose-100">
-              <Camera size={16} />
-              Change
-            </button>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(event) => uploadPhoto(event.target.files?.[0])} />
-          </div>
-        </div>
-
-        <label className="mb-3.5 block">
-          <span className="mb-2 block text-sm font-bold text-cyan-950">Name</span>
-          <input value={form.displayName} onChange={(event) => updateField('displayName', event.target.value)} className="w-full rounded-2xl border border-aqua-100/60 bg-white px-4 py-3 text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft" />
-        </label>
-
-        <label className="mb-3.5 block">
-          <span className="mb-2 block text-sm font-bold text-cyan-950">Username</span>
-          <input value={form.username} onChange={(event) => updateField('username', event.target.value)} className="w-full rounded-2xl border border-aqua-100/60 bg-white px-4 py-3 text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft" />
-        </label>
-
-        <label className="mb-3.5 block">
-          <span className="mb-2 block text-sm font-bold text-cyan-950">Bio</span>
-          <textarea value={form.bio} onChange={(event) => updateField('bio', event.target.value)} rows={3} className="w-full resize-none rounded-2xl border border-aqua-100/60 bg-white px-4 py-3 text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft" />
-        </label>
-
-        <label className="mb-4 block">
-          <span className="mb-2 flex items-center gap-2 text-sm font-bold text-cyan-950">
-            <KeyRound size={15} />
-            New password
-          </span>
-          <input
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            type="password"
-            disabled={!canChangePassword}
-            placeholder={canChangePassword ? 'Optional' : 'Not available for Google or phone login'}
-            className="w-full rounded-2xl border border-aqua-100/60 bg-white px-4 py-3 text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft disabled:bg-slate-50/60 disabled:text-slate-400"
-          />
-        </label>
-
-        <button disabled={busy} className="w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-3 font-bold text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-50 disabled:shadow-none">
-          {busy ? 'Saving...' : 'Save changes'}
-        </button>
-
-        {message && <p className="mt-4 rounded-2xl bg-aqua-100/60 border border-aqua-200/60 px-4 py-3 text-sm font-bold text-cyan-800">{message}</p>}
-      </form>
-    </div>
-  );
-}
-
-function CallModal({ state, localVideoRef, remoteVideoRef, onAnswer, onEnd }) {
-  const isVideo = state.callType === 'video';
-
-  return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-gradient-to-br from-cyan-950/90 to-cyan-900/90 p-3 backdrop-blur-sm sm:p-4">
-      <div className="w-full max-w-3xl animate-pop overflow-hidden rounded-3xl bg-gradient-to-br from-cyan-950 to-cyan-900 text-white shadow-soft-xl">
-        <div className={`grid min-h-[50dvh] bg-gradient-to-br from-cyan-900 to-cyan-950 ${isVideo ? 'sm:grid-cols-2' : 'place-items-center'}`}>
-          {isVideo ? (
-            <>
-              <video ref={remoteVideoRef} autoPlay playsInline className="h-full min-h-48 w-full bg-cyan-950 object-cover sm:min-h-64" />
-              <video ref={localVideoRef} autoPlay muted playsInline className="h-full min-h-48 w-full bg-cyan-800 object-cover sm:min-h-64" />
-            </>
-          ) : (
-            <div className="flex flex-col items-center gap-4 p-8">
-              <Avatar user={state.caller} size="xl" />
-              <p className="text-sm text-cyan-200">Voice call in progress</p>
-              <video ref={remoteVideoRef} autoPlay playsInline className="hidden" />
-              <video ref={localVideoRef} autoPlay muted playsInline className="hidden" />
-            </div>
-          )}
-        </div>
-        <div className="flex items-center justify-between gap-4 bg-gradient-to-r from-cyan-950 to-cyan-900/80 px-6 py-5 border-t border-cyan-800/30">
-          <div>
-            <h2 className="text-lg font-black text-white">{state.caller?.displayName || 'Call'}</h2>
-            <p className="text-sm text-cyan-200">{state.callType === 'video' ? 'Video call' : 'Voice call'}</p>
-          </div>
-          <div className="flex gap-3">
-            {state.incoming && (
-              <button onClick={onAnswer} className="rounded-2xl bg-gradient-to-r from-emerald-500 to-emerald-400 px-6 py-3 font-bold text-white shadow-lg shadow-emerald-200/30 transition duration-200 hover:shadow-emerald-300/50">
-                Answer
-              </button>
-            )}
-            <button onClick={onEnd} className="rounded-2xl bg-gradient-to-r from-rose-500 to-rose-400 px-6 py-3 font-bold text-white shadow-lg shadow-rose-200/30 transition duration-200 hover:shadow-rose-300/50">
-              End
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
   );
 }

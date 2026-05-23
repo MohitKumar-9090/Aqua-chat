@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getRedirectResult, onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth } from '../firebase.js';
+import { auth, isPasswordProvider } from '../firebase.js';
 import { api, setCurrentPresence } from '../api.js';
 
 const SESSION_STORAGE_KEY = 'aquachat_session';
 const PROFILE_STORAGE_KEY = 'aquachat_profile';
+const PENDING_SIGNUP_KEY = 'pendingSignupProfile';
 const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
 export const useAuth = () => {
@@ -12,6 +13,7 @@ export const useAuth = () => {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
 
   // Try to restore from localStorage on mount
   useEffect(() => {
@@ -48,26 +50,33 @@ export const useAuth = () => {
 
       if (!user) {
         setProfile(null);
-        // Clear session storage on logout
+        setNeedsEmailVerification(false);
         localStorage.removeItem(SESSION_STORAGE_KEY);
         localStorage.removeItem(PROFILE_STORAGE_KEY);
         setLoading(false);
         return;
       }
 
+      if (isPasswordProvider(user) && !user.emailVerified) {
+        setNeedsEmailVerification(true);
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+
+      setNeedsEmailVerification(false);
+
       try {
-        const pendingPhoneProfile = JSON.parse(localStorage.getItem('pendingPhoneProfile') || 'null');
+        const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
         const { user: synced } = await api.sync({
-          name: pendingPhoneProfile?.name || user.displayName,
-          displayName: pendingPhoneProfile?.name || user.displayName,
-          username: pendingPhoneProfile?.username,
-          phone: pendingPhoneProfile?.phone || user.phoneNumber,
-          phoneNumber: pendingPhoneProfile?.phone || user.phoneNumber,
-          email: pendingPhoneProfile?.email || user.email,
+          name: pendingSignup?.name || user.displayName,
+          displayName: pendingSignup?.name || user.displayName,
+          username: pendingSignup?.username,
+          email: pendingSignup?.email || user.email,
           profilePicture: user.photoURL,
           photoURL: user.photoURL
         });
-        localStorage.removeItem('pendingPhoneProfile');
+        localStorage.removeItem(PENDING_SIGNUP_KEY);
         
         // Store session info
         localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
@@ -125,13 +134,14 @@ export const useAuth = () => {
       setProfile,
       loading,
       error,
+      needsEmailVerification,
       logout: () => {
         localStorage.removeItem(SESSION_STORAGE_KEY);
         localStorage.removeItem(PROFILE_STORAGE_KEY);
         auth && signOut(auth);
       }
     }),
-    [firebaseUser, profile, loading, error]
+    [firebaseUser, profile, loading, error, needsEmailVerification]
   );
 
   return value;

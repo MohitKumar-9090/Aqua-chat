@@ -6,7 +6,7 @@ import { registerServiceWorker } from './pwa.js';
 
 const App = lazy(() => import('./App.jsx'));
 
-registerServiceWorker();
+registerServiceWorker().catch(console.error);
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
