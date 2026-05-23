@@ -1,6 +1,24 @@
 import { get, onValue, push, ref as dbRef, remove, set, update } from 'firebase/database';
-import { realtimeDb } from '../firebase.js';
+import { auth, realtimeDb } from '../firebase.js';
 import { getIceServers } from './iceServers.js';
+
+const signalingUid = () => {
+  const uid = auth?.currentUser?.uid;
+  if (!uid) throw new Error('You must be signed in to place or answer a call.');
+  return uid;
+};
+
+const callParticipants = (from, to) => ({ [from]: true, [to]: true });
+
+const toCallError = (error, fallback) => {
+  const code = error?.code || '';
+  if (code === 'PERMISSION_DENIED') {
+    return new Error(
+      'Call signaling was blocked by server permissions. Sign out and back in, then redeploy Firebase Realtime Database rules.'
+    );
+  }
+  return new Error(error?.message || fallback);
+};
 
 export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   const iceServers = await getIceServers();
@@ -51,10 +69,15 @@ export const subscribeIncomingCalls = (uid, handler) => {
 
     const rooms = await Promise.all(
       callIds.map(async (callId) => {
-        const roomSnap = await get(dbRef(realtimeDb, `calls/${callId}`));
-        const room = roomSnap.val();
-        if (!room || room.status !== 'ringing' || room.to !== uid) return null;
-        return { id: callId, ...room };
+        try {
+          const roomSnap = await get(dbRef(realtimeDb, `calls/${callId}`));
+          const room = roomSnap.val();
+          if (!room || room.status !== 'ringing' || room.to !== uid) return null;
+          return { id: callId, ...room };
+        } catch (error) {
+          console.error('Incoming call room read failed:', callId, error);
+          return null;
+        }
       })
     );
 
@@ -66,26 +89,59 @@ export const subscribeCallRoom = (callId, handler) => {
   return onValue(dbRef(realtimeDb, `calls/${callId}`), (snap) => handler(snap.val() || null));
 };
 
-export const startOutgoingCall = async ({ callId, from, to, callType, offer }) => {
+/** Create call metadata before ICE/SDP so RTDB rules always see from/to/participants. */
+export const createCallRoom = async ({ callId, from, to, callType }) => {
+  const callerUid = from || signalingUid();
   await set(dbRef(realtimeDb, `calls/${callId}`), {
-    from,
+    from: callerUid,
     to,
     callType,
     status: 'ringing',
-    offer: offer ? JSON.parse(JSON.stringify(offer)) : null,
+    offer: null,
     answer: null,
+    participants: callParticipants(callerUid, to),
     createdAt: Date.now()
   });
+};
+
+export const ringCallee = async ({ callId, from, to, callType }) => {
+  const callerUid = from || signalingUid();
   await set(dbRef(realtimeDb, `userIncoming/${to}/${callId}`), {
-    from,
+    from: callerUid,
     callType,
     createdAt: Date.now()
   });
 };
 
+export const publishCallOffer = async (callId, offer) => {
+  try {
+    await update(dbRef(realtimeDb, `calls/${callId}`), {
+      offer: offer ? JSON.parse(JSON.stringify(offer)) : null
+    });
+  } catch (error) {
+    throw toCallError(error, 'Could not publish call offer.');
+  }
+};
+
+export const startOutgoingCall = async ({ callId, from, to, callType, offer }) => {
+  const callerUid = from || signalingUid();
+  try {
+    await createCallRoom({ callId, from: callerUid, to, callType });
+    if (offer) await publishCallOffer(callId, offer);
+    await ringCallee({ callId, from: callerUid, to, callType });
+  } catch (error) {
+    throw toCallError(error, 'Could not start outgoing call.');
+  }
+};
+
 export const pushIceCandidate = async (callId, uid, candidate) => {
-  const candidateRef = push(dbRef(realtimeDb, `calls/${callId}/candidates/${uid}`));
-  await set(candidateRef, JSON.parse(JSON.stringify(candidate)));
+  const writerUid = uid || signalingUid();
+  const candidateRef = push(dbRef(realtimeDb, `calls/${callId}/candidates/${writerUid}`));
+  try {
+    await set(candidateRef, JSON.parse(JSON.stringify(candidate)));
+  } catch (error) {
+    throw toCallError(error, 'Could not send connection details for the call.');
+  }
 };
 
 export const subscribeIceCandidates = (callId, uid, handler) => {
@@ -102,12 +158,17 @@ export const subscribeIceCandidates = (callId, uid, handler) => {
   });
 };
 
-export const sendCallAnswer = async (callId, to, answer) => {
-  await update(dbRef(realtimeDb, `calls/${callId}`), {
-    answer: JSON.parse(JSON.stringify(answer)),
-    status: 'active'
-  });
-  await remove(dbRef(realtimeDb, `userIncoming/${to}/${callId}`));
+export const sendCallAnswer = async (callId, calleeUid, answer) => {
+  const uid = calleeUid || signalingUid();
+  try {
+    await update(dbRef(realtimeDb, `calls/${callId}`), {
+      answer: JSON.parse(JSON.stringify(answer)),
+      status: 'active'
+    });
+    await remove(dbRef(realtimeDb, `userIncoming/${uid}/${callId}`));
+  } catch (error) {
+    throw toCallError(error, 'Could not send call answer.');
+  }
 };
 
 export const endCallRoom = async (callId, from, to) => {

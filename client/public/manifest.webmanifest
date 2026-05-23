@@ -1,17 +1,19 @@
 {
-  "name": "AquaChat - Real-Time Messaging",
+  "name": "AquaChat",
   "short_name": "AquaChat",
-  "description": "A premium real-time chat platform for messages, groups, calls, statuses, and people search.",
-  "id": "/?source=pwa",
-  "start_url": "/?source=pwa",
+  "description": "Real-time messaging, groups, calls, and statuses.",
+  "id": "/",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui", "browser"],
+  "display_override": ["standalone", "fullscreen", "minimal-ui"],
   "orientation": "portrait-primary",
   "background_color": "#f8fdff",
   "theme_color": "#06b6d4",
+  "lang": "en",
+  "dir": "ltr",
   "prefer_related_applications": false,
-  "categories": ["social", "productivity", "communication"],
+  "categories": ["social", "communication"],
   "icons": [
     {
       "src": "/icon-192.png",
@@ -26,31 +28,23 @@
       "purpose": "any"
     },
     {
-      "src": "/icon-512.png",
+      "src": "/icon-maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
-    },
-    {
-      "src": "/app-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
     }
   ],
   "shortcuts": [
     {
       "name": "Open Chats",
       "short_name": "Chats",
-      "description": "Jump back into your conversations.",
-      "url": "/?panel=chats&source=pwa",
+      "url": "/?panel=chats",
       "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     },
     {
       "name": "Find People",
       "short_name": "People",
-      "description": "Search users by username, email, or phone.",
-      "url": "/?panel=people&source=pwa",
+      "url": "/?panel=people",
       "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ]

@@ -18,8 +18,8 @@ import {
   where,
   writeBatch
 } from 'firebase/firestore';
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
-import { onDisconnect, onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
+import { getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage';
+import { onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
 import { auth, firestore, realtimeDb, storage } from './firebase.js';
 
 const cleanUsername = (value = '') => value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24);
@@ -108,19 +108,44 @@ const chatDocToObject = async (snap) => {
 
 const directChatId = (a, b) => `direct_${[a, b].sort().join('_')}`;
 
-export const subscribePresence = (handler) => {
-  const presenceRef = dbRef(realtimeDb, 'presence');
-  return onValue(presenceRef, (snap) => {
-    const value = snap.val() || {};
-    handler(value);
-  });
+const normalizeLastSeen = (value) => {
+  if (value == null || value === '') return '';
+  if (typeof value === 'number') return new Date(value).toISOString();
+  if (typeof value === 'object' && typeof value.seconds === 'number') {
+    return new Date(value.seconds * 1000).toISOString();
+  }
+  return String(value);
 };
 
-export const setCurrentPresence = (uid) => {
-  const ref = dbRef(realtimeDb, `presence/${uid}`);
-  set(ref, { isOnline: true, lastSeen: rtdbTimestamp() });
-  onDisconnect(ref).set({ isOnline: false, lastSeen: rtdbTimestamp() });
+export const normalizePresenceMap = (presence = {}) => {
+  const normalized = {};
+  Object.entries(presence).forEach(([uid, data]) => {
+    if (!data || typeof data !== 'object') return;
+    const online = Boolean(data.online ?? data.isOnline);
+    normalized[uid] = {
+      online,
+      isOnline: online,
+      lastSeen: normalizeLastSeen(data.lastSeen)
+    };
+  });
+  return normalized;
 };
+
+export const subscribePresence = (handler) => {
+  if (!realtimeDb) {
+    console.warn('Realtime Database is not configured.');
+    return () => {};
+  }
+  const presenceRef = dbRef(realtimeDb, 'presence');
+  return onValue(
+    presenceRef,
+    (snap) => handler(normalizePresenceMap(snap.val() || {})),
+    (error) => console.error('Presence listener error:', error)
+  );
+};
+
+/** @deprecated Use startPresenceSession from services/presence.js */
+export { startPresenceSession as setCurrentPresence, touchPresence } from './services/presence.js';
 
 export const subscribeChats = (handler) => {
   const uid = currentUid();
@@ -153,6 +178,15 @@ const mapMessageDoc = (messageSnap, chatId) => {
     type: data.type || 'text',
     body: data.body || '',
     mediaUrl: data.mediaUrl || '',
+    storagePath: data.storagePath || '',
+    fileName: data.fileName || '',
+    fileSize: data.fileSize || 0,
+    mimeType: data.mimeType || '',
+    duration: data.duration || 0,
+    replyTo: data.replyTo || null,
+    deletedFor: data.deletedFor || [],
+    deletedForEveryone: Boolean(data.deletedForEveryone),
+    deletedAt: data.deletedAt?.toDate?.()?.toISOString?.() || data.deletedAt || null,
     status: data.status || 'sent',
     seenBy: data.seenBy || [],
     deliveredTo: data.deliveredTo || [],
@@ -160,6 +194,31 @@ const mapMessageDoc = (messageSnap, chatId) => {
     createdAt: messageCreatedAt(data)
   };
 };
+
+export const filterVisibleMessages = (messages, uid) =>
+  messages.filter((message) => !message.deletedFor?.includes(uid));
+
+const lastMessageLabel = (message) => {
+  if (message.deletedForEveryone) return 'This message was deleted';
+  if (message.type === 'image') return 'Photo';
+  if (message.type === 'video') return 'Video';
+  if (message.type === 'voice' || message.type === 'audio') return 'Voice message';
+  if (message.type === 'file') return message.fileName || 'File';
+  return message.body || '';
+};
+
+const buildLastMessagePreview = (messageId, message, clientCreatedAt) => ({
+  _id: messageId,
+  chat: message.chat,
+  sender: message.sender,
+  senderId: message.senderId,
+  type: message.type,
+  body: lastMessageLabel(message),
+  mediaUrl: message.mediaUrl || '',
+  status: 'sent',
+  createdAt: new Date(clientCreatedAt).toISOString(),
+  clientCreatedAt
+});
 
 const sortMessages = (messages) =>
   [...messages].sort((a, b) => {
@@ -178,29 +237,33 @@ const applySnapshot = (snap, chatId, handler) => {
 
 export const subscribeMessages = (chatId, handler) => {
   let unsubscribe = () => {};
-  const primaryQuery = query(
-    collection(firestore, 'chats', chatId, 'messages'),
-    orderBy('clientCreatedAt', 'asc'),
-    limit(100)
-  );
-  const fallbackQuery = query(collection(firestore, 'chats', chatId, 'messages'), limit(100));
+  let activeChatId = chatId;
+  const queries = [
+    query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100)),
+    query(collection(firestore, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc'), limit(100)),
+    query(collection(firestore, 'chats', chatId, 'messages'), limit(100))
+  ];
 
-  const attach = (q, allowFallback = true) => {
+  const attachAt = (index = 0) => {
+    if (index >= queries.length) return;
     unsubscribe = onSnapshot(
-      q,
-      (snap) => applySnapshot(snap, chatId, handler),
+      queries[index],
+      (snap) => {
+        if (activeChatId !== chatId) return;
+        applySnapshot(snap, chatId, handler);
+      },
       (error) => {
         console.error('Message listener error:', error);
-        if (allowFallback && error.code === 'failed-precondition') {
-          attach(fallbackQuery, false);
-          return;
-        }
+        if (index + 1 < queries.length) attachAt(index + 1);
       }
     );
   };
 
-  attach(primaryQuery, true);
-  return () => unsubscribe();
+  attachAt(0);
+  return () => {
+    activeChatId = null;
+    unsubscribe();
+  };
 };
 
 export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
@@ -255,12 +318,18 @@ export const api = {
       updatedAt: serverTimestamp()
     };
 
-    await setDoc(doc(firestore, 'users', user.uid), {
-      ...profile,
-      searchableKeywords: buildKeywords(profile),
-      createdAt: serverTimestamp()
-    }, { merge: true });
-    setCurrentPresence(user.uid);
+    const userRef = doc(firestore, 'users', user.uid);
+    const existing = await getDoc(userRef);
+    await setDoc(
+      userRef,
+      {
+        ...profile,
+        searchableKeywords: buildKeywords(profile),
+        ...(existing.exists() ? {} : { createdAt: serverTimestamp() })
+      },
+      { merge: true }
+    );
+    // Presence session is started by usePresenceSession in ChatShell / useAuth.
     return { user: await readUser(user.uid), isNewUser: false };
   },
 
@@ -412,6 +481,14 @@ export const api = {
       type: payload.type || 'text',
       body: payload.body || '',
       mediaUrl: payload.mediaUrl || '',
+      storagePath: payload.storagePath || '',
+      fileName: payload.fileName || '',
+      fileSize: payload.fileSize || 0,
+      mimeType: payload.mimeType || '',
+      duration: payload.duration || 0,
+      replyTo: payload.replyTo || null,
+      deletedFor: [],
+      deletedForEveryone: false,
       status: 'sent',
       seenBy: [uid],
       deliveredTo: [uid],
@@ -419,18 +496,7 @@ export const api = {
       createdAt: serverTimestamp()
     };
 
-    const preview = {
-      _id: messageRef.id,
-      chat: chatId,
-      sender,
-      senderId: uid,
-      type: message.type,
-      body: message.body,
-      mediaUrl: message.mediaUrl,
-      status: 'sent',
-      createdAt: new Date(clientCreatedAt).toISOString(),
-      clientCreatedAt
-    };
+    const preview = buildLastMessagePreview(messageRef.id, message, clientCreatedAt);
 
     await runTransaction(firestore, async (transaction) => {
       transaction.set(messageRef, message);
@@ -439,7 +505,87 @@ export const api = {
         updatedAt: serverTimestamp()
       });
     });
-    return { message: { ...preview, seenBy: [uid], deliveredTo: [uid] } };
+    return { message: { ...preview, seenBy: [uid], deliveredTo: [uid], deletedFor: [], deletedForEveryone: false } };
+  },
+
+  deleteMessageForMe: async (chatId, messageId) => {
+    const uid = currentUid();
+    const messageRef = doc(firestore, 'chats', chatId, 'messages', messageId);
+    await updateDoc(messageRef, { deletedFor: arrayUnion(uid) });
+    return { ok: true };
+  },
+
+  deleteMessageForEveryone: async (chatId, messageId) => {
+    const uid = currentUid();
+    const messageRef = doc(firestore, 'chats', chatId, 'messages', messageId);
+    const snap = await getDoc(messageRef);
+    if (!snap.exists()) throw new Error('Message not found.');
+    if (snap.data().senderId !== uid) throw new Error('Only the sender can delete this message for everyone.');
+
+    await updateDoc(messageRef, {
+      deletedForEveryone: true,
+      body: '',
+      mediaUrl: '',
+      deletedAt: serverTimestamp(),
+      deletedBy: uid
+    });
+
+    const chatRef = doc(firestore, 'chats', chatId);
+    const chatSnap = await getDoc(chatRef);
+    if (chatSnap.data()?.lastMessage?._id === messageId) {
+      await updateDoc(chatRef, {
+        lastMessage: {
+          _id: messageId,
+          type: 'text',
+          body: 'This message was deleted',
+          senderId: uid,
+          deletedForEveryone: true,
+          createdAt: new Date().toISOString()
+        },
+        updatedAt: serverTimestamp()
+      });
+    }
+    return { ok: true };
+  },
+
+  deleteMessagesForMe: async (chatId, messageIds = []) => {
+    const uid = currentUid();
+    const batch = writeBatch(firestore);
+    messageIds.forEach((messageId) => {
+      batch.update(doc(firestore, 'chats', chatId, 'messages', messageId), { deletedFor: arrayUnion(uid) });
+    });
+    await batch.commit();
+    return { ok: true };
+  },
+
+  upload: async (file, { onProgress } = {}) => {
+    const uid = currentUid();
+    const path = `uploads/${uid}/${Date.now()}-${file.name}`;
+    const ref = storageRef(storage, path);
+    const task = uploadBytesResumable(ref, file, { contentType: file.type || 'application/octet-stream' });
+
+    await new Promise((resolve, reject) => {
+      task.on(
+        'state_changed',
+        (snapshot) => {
+          if (onProgress && snapshot.totalBytes) {
+            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+          }
+        },
+        reject,
+        resolve
+      );
+    });
+
+    return {
+      url: await getDownloadURL(ref),
+      publicId: path,
+      storagePath: path,
+      resourceType: file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('image/') ? 'image' : 'file',
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || ''
+    };
   },
 
   seen: async (chatId) => {
@@ -448,24 +594,12 @@ export const api = {
     const batch = writeBatch(firestore);
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
-      if (data.senderId !== uid && !data.seenBy?.includes(uid)) {
+      if (data.senderId !== uid && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
         batch.update(messageDoc.ref, { seenBy: arrayUnion(uid), status: 'seen' });
       }
     });
     await batch.commit();
     return { ok: true };
-  },
-
-  upload: async (file) => {
-    const uid = currentUid();
-    const path = `uploads/${uid}/${Date.now()}-${file.name}`;
-    const ref = storageRef(storage, path);
-    await uploadBytes(ref, file);
-    return {
-      url: await getDownloadURL(ref),
-      publicId: path,
-      resourceType: file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image'
-    };
   },
 
   statuses: async () => {

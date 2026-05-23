@@ -18,18 +18,42 @@
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         "$callId": {
-          ".write": "auth != null"
+          ".write": "auth != null && (
+            (auth.uid === $uid && !newData.exists()) ||
+            (!data.exists() && root.child('calls').child($callId).child('from').val() === auth.uid && root.child('calls').child($callId).child('to').val() === $uid)
+          )"
         }
       }
     },
     "calls": {
       "$callId": {
-        ".read": "auth != null && (!data.exists() || data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
-        ".write": "auth != null && (!data.exists() || data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
+        ".read": "auth != null && (
+          !data.exists() ||
+          data.child('from').val() === auth.uid ||
+          data.child('to').val() === auth.uid ||
+          data.child('participants').child(auth.uid).exists()
+        )",
+        ".write": "auth != null && (
+          (!data.exists() && newData.child('from').val() === auth.uid) ||
+          (data.exists() && (
+            data.child('from').val() === auth.uid ||
+            data.child('to').val() === auth.uid ||
+            data.child('participants').child(auth.uid).exists()
+          ))
+        )",
         "candidates": {
+          ".read": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )",
           "$uid": {
-            ".read": "auth != null && (root.child('calls').child($callId).child('from').val() === auth.uid || root.child('calls').child($callId).child('to').val() === auth.uid)",
-            ".write": "auth != null && auth.uid === $uid"
+            ".write": "auth != null && auth.uid === $uid && (
+              root.child('calls').child($callId).child('from').val() === auth.uid ||
+              root.child('calls').child($callId).child('to').val() === auth.uid ||
+              root.child('calls').child($callId).child('participants').child(auth.uid).exists() ||
+              !root.child('calls').child($callId).exists()
+            )"
           }
         }
       }

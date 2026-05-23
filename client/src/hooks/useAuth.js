@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getRedirectResult, onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, isPasswordProvider } from '../firebase.js';
-import { api, setCurrentPresence } from '../api.js';
+import { api } from '../api.js';
+import { stopPresenceSession } from '../services/presence.js';
+import { usePresenceSession } from './usePresenceSession.js';
 
 const SESSION_STORAGE_KEY = 'aquachat_session';
 const PROFILE_STORAGE_KEY = 'aquachat_profile';
@@ -11,6 +13,9 @@ const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 export const useAuth = () => {
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [profile, setProfile] = useState(null);
+  const lastUidRef = useRef(null);
+  const presenceUid = profile?._id || firebaseUser?.uid || null;
+  usePresenceSession(presenceUid);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
@@ -49,6 +54,10 @@ export const useAuth = () => {
       setError('');
 
       if (!user) {
+        if (lastUidRef.current) {
+          stopPresenceSession(lastUidRef.current).catch(console.error);
+          lastUidRef.current = null;
+        }
         setProfile(null);
         setNeedsEmailVerification(false);
         localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -65,6 +74,7 @@ export const useAuth = () => {
       }
 
       setNeedsEmailVerification(false);
+      lastUidRef.current = user.uid;
 
       try {
         const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
@@ -90,7 +100,6 @@ export const useAuth = () => {
         localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
         
         setProfile(synced);
-        setCurrentPresence(user.uid);
       } catch (err) {
         const message = err.message || 'Could not load your profile.';
         setError(message);
@@ -100,8 +109,11 @@ export const useAuth = () => {
           const cachedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
           if (cachedProfile) {
             const profile = JSON.parse(cachedProfile);
-            setProfile(profile);
-            return;
+            if (profile._id === user.uid) {
+              setProfile(profile);
+              return;
+            }
+            localStorage.removeItem(PROFILE_STORAGE_KEY);
           }
         } catch (cacheErr) {
           // Cache read failed, continue with error
@@ -135,7 +147,9 @@ export const useAuth = () => {
       loading,
       error,
       needsEmailVerification,
-      logout: () => {
+      logout: async () => {
+        const uid = auth?.currentUser?.uid || profile?._id;
+        if (uid) await stopPresenceSession(uid);
         localStorage.removeItem(SESSION_STORAGE_KEY);
         localStorage.removeItem(PROFILE_STORAGE_KEY);
         auth && signOut(auth);

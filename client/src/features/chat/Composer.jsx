@@ -1,12 +1,14 @@
 import { useRef, useState } from 'react';
-import { Image, Mic, Paperclip, Send, Smile } from 'lucide-react';
+import { FileText, Mic, Paperclip, Send, Smile, X } from 'lucide-react';
 import { setTyping as setFirebaseTyping } from '../../api.js';
+import { detectMessageType, prepareUploadFile } from '../../utils/messageMedia.js';
 
 const emptyRecorder = { recording: false, stream: null, mediaRecorder: null, chunks: [] };
 
-export default function Composer({ chat, onSend, onUpload, isMobile }) {
+export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload, isMobile }) {
   const [text, setText] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [recorder, setRecorder] = useState(emptyRecorder);
   const fileRef = useRef(null);
   const typingTimerRef = useRef(null);
@@ -19,20 +21,47 @@ export default function Composer({ chat, onSend, onUpload, isMobile }) {
 
   const submit = (event) => {
     event.preventDefault();
-    if (!text.trim()) return;
+    if (!text.trim() || uploading) return;
     onSend({ type: 'text', body: text.trim() });
     setText('');
+  };
+
+  const uploadWithRetry = async (file, attempt = 0) => {
+    try {
+      const prepared = await prepareUploadFile(file);
+      const uploaded = await onUpload(prepared, {
+        onProgress: (value) => setUploadProgress(value)
+      });
+      const kind = detectMessageType(prepared);
+      onSend({
+        type: kind,
+        body: kind === 'file' ? '' : '',
+        mediaUrl: uploaded.url,
+        storagePath: uploaded.storagePath || uploaded.publicId,
+        fileName: uploaded.fileName || prepared.name,
+        fileSize: uploaded.fileSize || prepared.size,
+        mimeType: uploaded.mimeType || prepared.type,
+        duration: uploaded.duration || 0
+      });
+    } catch (error) {
+      if (attempt < 1) {
+        await uploadWithRetry(file, attempt + 1);
+        return;
+      }
+      throw error;
+    }
   };
 
   const uploadFile = async (file) => {
     if (!file) return;
     setUploading(true);
+    setUploadProgress(0);
     try {
-      const uploaded = await onUpload(file);
-      const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'audio';
-      onSend({ type: kind, mediaUrl: uploaded.url, cloudinaryPublicId: uploaded.publicId, duration: uploaded.duration || 0 });
+      await uploadWithRetry(file);
     } finally {
       setUploading(false);
+      setUploadProgress(0);
+      if (fileRef.current) fileRef.current.value = '';
     }
   };
 
@@ -60,27 +89,56 @@ export default function Composer({ chat, onSend, onUpload, isMobile }) {
   return (
     <form
       onSubmit={submit}
-      className={`composer-keyboard-safe sticky bottom-0 z-20 shrink-0 border-t border-aqua-100/40 bg-white/95 px-2 py-3 backdrop-blur-sm sm:px-3 sm:py-4 ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+0.25rem)]' : ''}`}
+      className={`composer-keyboard-safe sticky bottom-0 z-20 shrink-0 border-t border-aqua-100/40 bg-white/95 backdrop-blur-sm ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+0.25rem)]' : ''}`}
     >
-      <div className="mx-auto flex max-w-3xl items-end gap-1.5 sm:gap-2.5">
+      {replyTo && (
+        <div className="mx-auto flex max-w-3xl items-center gap-2 border-b border-aqua-100/60 px-3 py-2 sm:px-4">
+          <div className="min-w-0 flex-1 border-l-4 border-cyan-500 pl-3">
+            <p className="text-xs font-black text-cyan-700">Replying</p>
+            <p className="truncate text-sm text-slate-600">{replyTo.body || replyTo.fileName || replyTo.type}</p>
+          </div>
+          <button type="button" onClick={onClearReply} className="rounded-xl p-2 text-slate-400 hover:bg-aqua-50" aria-label="Cancel reply">
+            <X size={18} />
+          </button>
+        </div>
+      )}
+
+      {uploading && (
+        <div className="mx-auto max-w-3xl px-3 pt-2 sm:px-4">
+          <div className="h-1.5 overflow-hidden rounded-full bg-aqua-100">
+            <div className="h-full rounded-full bg-cyan-500 transition-all duration-200" style={{ width: `${uploadProgress || 8}%` }} />
+          </div>
+          <p className="mt-1 text-center text-[11px] font-semibold text-slate-500">Uploading… {uploadProgress}%</p>
+        </div>
+      )}
+
+      <div className="mx-auto flex max-w-3xl items-end gap-1.5 px-2 py-3 sm:gap-2.5 sm:px-3 sm:py-4">
         <button type="button" className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Emoji">
           <Smile size={20} />
         </button>
-        <button type="button" onClick={() => fileRef.current?.click()} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Attach">
+        <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700 disabled:opacity-50" title="Attach">
           <Paperclip size={20} />
         </button>
-        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(e) => uploadFile(e.target.files?.[0])} />
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip"
+          className="hidden"
+          onChange={(e) => uploadFile(e.target.files?.[0])}
+        />
         <input
           value={text}
           onChange={(e) => { setText(e.target.value); type(); }}
           placeholder="Message..."
           enterKeyHint="send"
+          disabled={uploading}
           className="min-w-0 flex-1 rounded-2xl border border-aqua-100/60 bg-white px-4 py-2.5 text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft sm:px-5 sm:py-3 sm:text-sm"
         />
-        <button 
-          type="button" 
-          onClick={toggleRecord} 
-          className={`rounded-2xl p-2.5 transition duration-200 ${recorder.recording ? 'bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-200/50' : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'}`} 
+        <button
+          type="button"
+          onClick={toggleRecord}
+          disabled={uploading}
+          className={`rounded-2xl p-2.5 transition duration-200 ${recorder.recording ? 'bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-200/50' : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'} disabled:opacity-50`}
           title="Voice note"
         >
           <Mic size={20} />
@@ -91,7 +149,7 @@ export default function Composer({ chat, onSend, onUpload, isMobile }) {
           className="rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 p-2.5 text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-60 disabled:shadow-none"
           title="Send"
         >
-          {uploading ? <Image size={20} className="animate-pulse" /> : <Send size={20} />}
+          {uploading ? <FileText size={20} className="animate-pulse" /> : <Send size={20} />}
         </button>
       </div>
     </form>

@@ -2,11 +2,15 @@ import React, { lazy, Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import './index.css';
-import { registerServiceWorker } from './pwa.js';
+import { captureInstallPrompt, registerServiceWorker } from './pwa.js';
 
-const App = lazy(() => import('./App.jsx'));
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', captureInstallPrompt);
+}
 
 registerServiceWorker().catch(console.error);
+
+const App = lazy(() => import('./App.jsx'));
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
