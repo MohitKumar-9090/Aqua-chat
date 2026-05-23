@@ -16,6 +16,7 @@ import { getCallMediaStream } from './utils/media.js';
 import { scheduleIdle } from './utils/scheduleIdle.js';
 import { auth } from './firebase.js';
 import { chatImage, chatTitle, directPeer, formatTime, statusText } from './utils/chat.js';
+import { userHasUnviewedStatus } from './utils/statusHelpers.js';
 import EmptyState from './features/chat/EmptyState.jsx';
 import PeopleSearchRow from './features/people/PeopleSearchRow.jsx';
 
@@ -130,6 +131,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [statuses, setStatuses] = useState([]);
   const [selectedChat, setSelectedChat] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [sendEpoch, setSendEpoch] = useState(0);
   const [query, setQuery] = useState('');
   const [typing, setTyping] = useState(null);
   const [panel, setPanel] = useState(() => new URLSearchParams(window.location.search).get('panel') || 'chats');
@@ -196,6 +198,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const { statuses: next } = await api.statuses();
     setStatuses(next);
   };
+
+  useEffect(() => {
+    const unsubscribe = api.subscribeStatuses(setStatuses);
+    return () => unsubscribe?.();
+  }, []);
 
   const refresh = async () => {
     if (panel === 'people' || query.trim()) {
@@ -300,6 +307,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const chatId = selectedChat._id;
     activeMessagesChatRef.current = chatId;
     setMessages([]);
+    setSendEpoch(0);
     setTyping(null);
 
     const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
@@ -408,6 +416,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       clientCreatedAt: Date.now()
     };
 
+    setSendEpoch((epoch) => epoch + 1);
     setMessages((current) => [...current, optimistic]);
     await setFirebaseTyping(chatId, false);
 
@@ -430,15 +439,21 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const createStatus = async (file) => {
-    if (file) {
-      const upload = await api.upload(file);
-      await api.createStatus({ type: upload.resourceType === 'video' ? 'video' : 'image', mediaUrl: upload.url });
-    } else {
-      const caption = window.prompt('Status');
-      if (caption) await api.createStatus({ type: 'text', caption });
+    try {
+      if (file) {
+        const upload = await api.upload(file);
+        await api.createStatus({
+          type: upload.resourceType === 'video' ? 'video' : 'image',
+          statusMedia: upload.url,
+          mediaUrl: upload.url
+        });
+      } else {
+        const caption = window.prompt('Status');
+        if (caption?.trim()) await api.createStatus({ type: 'text', statusText: caption.trim(), caption: caption.trim() });
+      }
+    } catch (error) {
+      toastError(error.message || 'Could not post status.');
     }
-    const { statuses: next } = await api.statuses();
-    setStatuses(next);
   };
 
   const cleanupCallListeners = () => {
@@ -730,7 +745,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     }} 
                     className={`w-full flex items-center gap-3 rounded-2xl p-3 text-left transition duration-200 group ${selectedChat?._id === chat._id ? 'bg-gradient-to-r from-cyan-500/20 to-aqua-300/20 border border-cyan-200/50' : 'hover:bg-aqua-50/60 border border-transparent'}`}
                   >
-                    <Avatar name={chatTitle(chat, profile)} image={chatImage(chat, profile)} online={directPeer(chat, profile)?.isOnline} />
+                    <Avatar
+                      name={chatTitle(chat, profile)}
+                      image={chatImage(chat, profile)}
+                      online={directPeer(chat, profile)?.isOnline}
+                      statusRing={userHasUnviewedStatus(statuses, directPeer(chat, profile)?._id, profile._id)}
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-3">
                         <h3 className="truncate font-bold text-cyan-950 text-sm">{chatTitle(chat, profile)}</h3>
@@ -770,6 +790,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   <PeopleSearchRow
                     key={user._id}
                     user={user}
+                    meId={profile._id}
+                    statuses={statuses}
                     connecting={connectingUserId === user._id}
                     onConnect={connectWithUser}
                     onAccept={acceptUser}
@@ -799,6 +821,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   chat={selectedChat}
                   me={profile}
                   messages={messages}
+                  sendEpoch={sendEpoch}
+                  statuses={statuses}
                   typing={typing}
                   isMobile={isMobile}
                   onBack={closeChat}

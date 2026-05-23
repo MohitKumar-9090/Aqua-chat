@@ -14,11 +14,14 @@ import {
   runTransaction,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
   writeBatch
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage';
+import { compressProfilePhoto, prepareUploadFile } from './utils/messageMedia.js';
+import { pruneStatusViewedLocal } from './utils/statusViewed.js';
 import { onAuthStateChanged } from 'firebase/auth';
 import { onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
 import { auth, firestore, realtimeDb, storage } from './firebase.js';
@@ -257,6 +260,23 @@ const sortMessages = (messages) =>
     const bTime = b.clientCreatedAt || new Date(b.createdAt).getTime() || 0;
     return aTime - bTime;
   });
+
+const mapStatusDoc = async (statusSnap) => {
+  const data = statusSnap.data();
+  const createdAt = data.createdAt?.toDate?.()?.toISOString?.() || '';
+  const expiresAt = data.expiresAt?.toDate?.()?.toISOString?.() || data.expiresAt || '';
+  return {
+    _id: statusSnap.id,
+    ...data,
+    statusText: data.statusText || data.caption || '',
+    statusMedia: data.statusMedia || data.mediaUrl || '',
+    mediaUrl: data.statusMedia || data.mediaUrl || '',
+    caption: data.statusText || data.caption || '',
+    user: await readUser(data.userId),
+    createdAt,
+    expiresAt
+  };
+};
 
 const applySnapshot = (snap, chatId, handler) => {
   const unique = new Map();
@@ -591,9 +611,10 @@ export const api = {
 
   upload: async (file, { onProgress } = {}) => {
     const uid = currentUid();
-    const path = `uploads/${uid}/${Date.now()}-${file.name}`;
+    const prepared = await prepareUploadFile(file);
+    const path = `uploads/${uid}/${Date.now()}-${prepared.name}`;
     const ref = storageRef(storage, path);
-    const task = uploadBytesResumable(ref, file, { contentType: file.type || 'application/octet-stream' });
+    const task = uploadBytesResumable(ref, prepared, { contentType: prepared.type || 'application/octet-stream' });
 
     await new Promise((resolve, reject) => {
       task.on(
@@ -612,11 +633,48 @@ export const api = {
       url: await getDownloadURL(ref),
       publicId: path,
       storagePath: path,
-      resourceType: file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('image/') ? 'image' : 'file',
-      fileName: file.name,
-      fileSize: file.size,
-      mimeType: file.type || ''
+      resourceType: prepared.type.startsWith('video/') ? 'video' : prepared.type.startsWith('audio/') ? 'audio' : prepared.type.startsWith('image/') ? 'image' : 'file',
+      fileName: prepared.name,
+      fileSize: prepared.size,
+      mimeType: prepared.type || ''
     };
+  },
+
+  uploadProfilePhoto: async (file, { onProgress } = {}) => {
+    const uid = currentUid();
+    const prepared = await compressProfilePhoto(file);
+    const path = `profiles/${uid}/avatar-${Date.now()}.jpg`;
+    const ref = storageRef(storage, path);
+    const task = uploadBytesResumable(ref, prepared, { contentType: 'image/jpeg' });
+
+    await new Promise((resolve, reject) => {
+      task.on(
+        'state_changed',
+        (snapshot) => {
+          if (onProgress && snapshot.totalBytes) {
+            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+          }
+        },
+        reject,
+        resolve
+      );
+    });
+
+    const url = await getDownloadURL(ref);
+    await updateDoc(doc(firestore, 'users', uid), {
+      photoURL: url,
+      profilePic: url,
+      profilePicture: url,
+      updatedAt: serverTimestamp()
+    });
+    return { url, user: await readUser(uid) };
+  },
+
+  subscribeUser: (uid, handler) => {
+    if (!uid) return () => {};
+    return onSnapshot(doc(firestore, 'users', uid), (snap) => {
+      handler(snap.exists() ? presentUser(snap.id, snap.data()) : null);
+    });
   },
 
   seen: async (chatId) => {
@@ -634,23 +692,52 @@ export const api = {
   },
 
   statuses: async () => {
-    const snap = await getDocs(query(collection(firestore, 'statuses'), orderBy('createdAt', 'desc'), limit(30)));
-    const statuses = await Promise.all(snap.docs.map(async (statusSnap) => {
-      const data = statusSnap.data();
-      return { _id: statusSnap.id, ...data, user: await readUser(data.userId), createdAt: data.createdAt?.toDate?.()?.toISOString?.() || '' };
-    }));
+    const snap = await getDocs(query(collection(firestore, 'statuses'), orderBy('createdAt', 'desc'), limit(60)));
+    const now = Date.now();
+    const statuses = (
+      await Promise.all(snap.docs.map((statusSnap) => mapStatusDoc(statusSnap)))
+    ).filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > now);
+    pruneStatusViewedLocal(statuses.map((item) => item._id));
     return { statuses };
+  },
+
+  subscribeStatuses: (handler) => {
+    const q = query(collection(firestore, 'statuses'), orderBy('createdAt', 'desc'), limit(60));
+    return onSnapshot(q, async (snap) => {
+      const now = Date.now();
+      const statuses = (
+        await Promise.all(snap.docs.map((statusSnap) => mapStatusDoc(statusSnap)))
+      ).filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > now);
+      pruneStatusViewedLocal(statuses.map((item) => item._id));
+      handler(statuses);
+    });
   },
 
   createStatus: async (body) => {
     const uid = currentUid();
-    const ref = await addDoc(collection(firestore, 'statuses'), {
-      ...body,
+    const expiresAtDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const expiresAt = Timestamp.fromDate(expiresAtDate);
+    const payload = {
+      type: body.type || 'text',
+      statusText: body.statusText || body.caption || '',
+      statusMedia: body.statusMedia || body.mediaUrl || '',
+      caption: body.statusText || body.caption || '',
+      mediaUrl: body.statusMedia || body.mediaUrl || '',
       userId: uid,
       createdAt: serverTimestamp(),
+      expiresAt,
       seenBy: []
-    });
-    return { status: { _id: ref.id, ...body, user: await readUser(uid) } };
+    };
+    const ref = await addDoc(collection(firestore, 'statuses'), payload);
+    return {
+      status: {
+        _id: ref.id,
+        ...payload,
+        expiresAt: expiresAtDate.toISOString(),
+        user: await readUser(uid),
+        createdAt: new Date().toISOString()
+      }
+    };
   },
 
   markStatusSeen: async (statusId) => {

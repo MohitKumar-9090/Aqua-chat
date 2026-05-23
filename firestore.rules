@@ -30,7 +30,9 @@ service cloud.firestore {
 
     match /statuses/{statusId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow create: if signedIn() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.expiresAt is timestamp;
       allow update: if signedIn();
     }
   }

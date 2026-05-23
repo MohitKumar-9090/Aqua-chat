@@ -236,10 +236,8 @@ export const ringCallee = async ({ callId, from, to, callType }) => {
 };
 
 export const publishCallOffer = async (callId, offer) => {
-  const path = `calls/${callId}`;
-  await rtdbUpdate(path, {
-    offer: offer ? JSON.parse(JSON.stringify(offer)) : null
-  }, 'publishCallOffer');
+  const path = `calls/${callId}/offer`;
+  await rtdbSet(path, offer ? JSON.parse(JSON.stringify(offer)) : null, 'publishCallOffer');
 };
 
 export const startOutgoingCall = async ({ callId, from, to, callType, offer }) => {
@@ -293,17 +291,10 @@ export const sendCallAnswer = async (callId, calleeUid, answer) => {
   await waitForAuthReady();
   await verifyCallAccess(callId, uid);
 
-  const callPath = `calls/${callId}`;
   const incomingPath = `userIncoming/${uid}/${callId}`;
 
-  await rtdbUpdate(
-    callPath,
-    {
-      answer: JSON.parse(JSON.stringify(answer)),
-      status: 'active'
-    },
-    'sendCallAnswer:update'
-  );
+  await rtdbSet(`calls/${callId}/answer`, JSON.parse(JSON.stringify(answer)), 'sendCallAnswer:answer');
+  await rtdbSet(`calls/${callId}/status`, 'active', 'sendCallAnswer:status');
 
   try {
     await rtdbRemove(incomingPath, 'sendCallAnswer:removeIncoming');
@@ -319,7 +310,8 @@ export const sendCallAnswer = async (callId, calleeUid, answer) => {
 
 export const endCallRoom = async (callId, from, to) => {
   try {
-    await rtdbUpdate(`calls/${callId}`, { status: 'ended', endedAt: Date.now() }, 'endCallRoom');
+    await rtdbSet(`calls/${callId}/status`, 'ended', 'endCallRoom:status');
+    await rtdbSet(`calls/${callId}/endedAt`, Date.now(), 'endCallRoom:endedAt');
   } catch {
     // Room may already be gone.
   }

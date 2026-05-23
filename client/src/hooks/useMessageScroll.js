@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 
-const NEAR_BOTTOM_THRESHOLD = 140;
+const NEAR_BOTTOM_THRESHOLD = 120;
 
 export const isNearBottom = (element, threshold = NEAR_BOTTOM_THRESHOLD) => {
   if (!element) return true;
@@ -8,15 +8,14 @@ export const isNearBottom = (element, threshold = NEAR_BOTTOM_THRESHOLD) => {
 };
 
 /**
- * WhatsApp-style scroll: stick to bottom only when the user is already there,
- * or when the current user sends a message.
+ * WhatsApp-style scroll: bottom only on send or when already near bottom + new message.
  */
-export function useMessageScroll(messages, meId, chatKey) {
+export function useMessageScroll(messages, chatKey, sendEpoch = 0) {
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
-  const snapshotRef = useRef({ count: 0, lastId: null, signature: '' });
+  const prevRef = useRef({ count: 0, lastId: null, sendEpoch: 0 });
 
-  const scrollToBottom = (behavior = 'smooth') => {
+  const scrollToBottom = (behavior = 'auto') => {
     const container = containerRef.current;
     if (!container) return;
     container.scrollTo({ top: container.scrollHeight, behavior });
@@ -28,35 +27,28 @@ export function useMessageScroll(messages, meId, chatKey) {
 
     const last = messages[messages.length - 1];
     const lastId = last?._id ?? null;
-    const signature = messages
-      .map((m) => `${m._id}:${m.status}:${m.deletedForEveryone}:${m.pending}`)
-      .join('|');
-
-    const prev = snapshotRef.current;
+    const prev = prevRef.current;
     const countIncreased = messages.length > prev.count;
-    const lastChanged = lastId !== prev.lastId;
-    const contentChanged = signature !== prev.signature;
+    const userJustSent = sendEpoch > prev.sendEpoch;
 
-    snapshotRef.current = { count: messages.length, lastId, signature };
-
-    if (!contentChanged) return;
-
-    const mine = last && (last.senderId === meId || last.pending);
-    const nearBottom = isNearBottom(container);
-
-    if (mine && (countIncreased || lastChanged)) {
+    if (userJustSent) {
+      prevRef.current = { count: messages.length, lastId, sendEpoch };
       scrollToBottom('smooth');
       return;
     }
 
-    if (nearBottom && countIncreased) {
+    prevRef.current = { count: messages.length, lastId, sendEpoch };
+
+    if (!countIncreased) return;
+
+    if (isNearBottom(container)) {
       scrollToBottom('smooth');
     }
-  }, [messages, meId]);
+  }, [messages, sendEpoch]);
 
   useLayoutEffect(() => {
     if (!chatKey) return;
-    snapshotRef.current = { count: 0, lastId: null, signature: '' };
+    prevRef.current = { count: 0, lastId: null, sendEpoch };
     requestAnimationFrame(() => scrollToBottom('auto'));
   }, [chatKey]);
 

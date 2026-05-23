@@ -41,6 +41,63 @@
             data.child('participants').child(auth.uid).exists()
           ))
         )",
+        "offer": {
+          ".read": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )",
+          ".write": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )"
+        },
+        "answer": {
+          ".read": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )",
+          ".write": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )"
+        },
+        "status": {
+          ".read": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )",
+          ".write": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )"
+        },
+        "endedAt": {
+          ".write": "auth != null && (
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )"
+        },
+        "callType": {
+          ".read": "auth != null && (
+            !data.exists() ||
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )",
+          ".write": "auth != null && (
+            !data.exists() ||
+            root.child('calls').child($callId).child('from').val() === auth.uid ||
+            root.child('calls').child($callId).child('to').val() === auth.uid ||
+            root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+          )"
+        },
         "candidates": {
           ".read": "auth != null && (
             !root.child('calls').child($callId).exists() ||
@@ -54,7 +111,15 @@
               root.child('calls').child($callId).child('from').val() === auth.uid ||
               root.child('calls').child($callId).child('to').val() === auth.uid ||
               root.child('calls').child($callId).child('participants').child(auth.uid).exists()
-            )"
+            )",
+            "$candidateId": {
+              ".write": "auth != null && auth.uid === $uid && (
+                !root.child('calls').child($callId).exists() ||
+                root.child('calls').child($callId).child('from').val() === auth.uid ||
+                root.child('calls').child($callId).child('to').val() === auth.uid ||
+                root.child('calls').child($callId).child('participants').child(auth.uid).exists()
+              )"
+            }
           }
         }
       }

@@ -2,8 +2,9 @@ import { memo } from 'react';
 import { BadgeCheck, MessageCircle, UserCheck, UserPlus } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { statusText } from '../../utils/chat.js';
+import { userHasUnviewedStatus } from '../../utils/statusHelpers.js';
 
-function PeopleSearchRow({ user, connecting, onConnect, onAccept, onFollow, onMessage }) {
+function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onAccept, onFollow, onMessage }) {
   const connectionLabel = connecting
     ? 'Connecting...'
     : user.connectionStatus === 'connected'
@@ -36,7 +37,7 @@ function PeopleSearchRow({ user, connecting, onConnect, onAccept, onFollow, onMe
       className="w-full cursor-pointer rounded-2xl border border-transparent p-3 text-left transition duration-200 hover:border-blush-100/50 hover:bg-blush-50/60"
     >
       <div className="flex items-start gap-3">
-        <Avatar user={user} online={user.isOnline} />
+        <Avatar user={user} online={user.isOnline} statusRing={userHasUnviewedStatus(statuses, user._id, meId)} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <h3 className="truncate text-sm font-bold text-cyan-950">{user.displayName}</h3>

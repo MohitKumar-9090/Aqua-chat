@@ -10,6 +10,8 @@ export default function ChatPanel({
   chat,
   me,
   messages,
+  sendEpoch = 0,
+  statuses = [],
   typing,
   isMobile,
   onBack,
@@ -106,13 +108,14 @@ export default function ChatPanel({
           onClear={clearSelection}
         />
       ) : (
-        <ChatHeader chat={chat} me={me} typing={typing} onBack={onBack} onAudio={onAudio} onVideo={onVideo} />
+        <ChatHeader chat={chat} me={me} typing={typing} statuses={statuses} onBack={onBack} onAudio={onAudio} onVideo={onVideo} />
       )}
 
       <MessageList
         messages={messages}
         me={me}
         chat={chat}
+        sendEpoch={sendEpoch}
         selectionMode={selectionMode}
         selectedIds={selectedIds}
         onToggleSelect={toggleSelect}

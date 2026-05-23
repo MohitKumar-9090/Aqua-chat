@@ -7,6 +7,7 @@ function MessageList({
   messages,
   me,
   chat,
+  sendEpoch = 0,
   selectionMode,
   selectedIds,
   onToggleSelect,
@@ -15,7 +16,7 @@ function MessageList({
 }) {
   const meId = me._id || me.uid;
   const visibleMessages = useMemo(() => filterVisibleMessages(messages, meId), [messages, meId]);
-  const { containerRef, bottomRef } = useMessageScroll(visibleMessages, meId, chat?._id);
+  const { containerRef, bottomRef } = useMessageScroll(visibleMessages, chat?._id, sendEpoch);
 
   const clampMenuPosition = (point) => {
     const menuWidth = 220;

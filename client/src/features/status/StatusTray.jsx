@@ -1,37 +1,70 @@
-import { useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
-import { api } from '../../api.js';
+import { groupStatusesByUser, userHasActiveStatus, userHasUnviewedStatus } from '../../utils/statusHelpers.js';
+import StatusViewer from './StatusViewer.jsx';
 
-export default function StatusTray({ statuses, onCreate, me }) {
+export default function StatusTray({ statuses, me, onCreate }) {
   const inputRef = useRef(null);
-  const grouped = statuses.slice(0, 12);
+  const [viewerBundle, setViewerBundle] = useState(null);
+  const meId = me?._id;
+
+  const bundles = useMemo(() => {
+    const grouped = groupStatusesByUser(statuses);
+    const list = [];
+    if (grouped.has(meId)) {
+      list.push({ userId: meId, user: me, items: grouped.get(meId) });
+    }
+    grouped.forEach((items, userId) => {
+      if (userId === meId) return;
+      list.push({ userId, user: items[0]?.user, items });
+    });
+    return list.slice(0, 14);
+  }, [statuses, me, meId]);
+
+  const openBundle = (bundle) => setViewerBundle(bundle);
 
   return (
-    <div className="flex gap-3 overflow-x-auto border-b border-aqua-100/40 px-3 py-4 scrollbar-hide">
-      <button onClick={() => inputRef.current?.click()} className="flex w-16 shrink-0 flex-col items-center gap-2">
-        <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-cyan-500 to-aqua-400 text-white shadow-lg shadow-cyan-200/50 transition hover:shadow-cyan-300/70">
-          <Plus size={22} />
-        </div>
-        <span className="w-full truncate text-xs font-bold text-cyan-900 text-center">Status</span>
-        <input ref={inputRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => onCreate(e.target.files?.[0])} />
-      </button>
-      <button onClick={() => onCreate()} className="flex w-16 shrink-0 flex-col items-center gap-2">
-        <Avatar user={me} size="lg" />
-        <span className="w-full truncate text-xs font-bold text-cyan-900 text-center">Text</span>
-      </button>
-      {grouped.map((status) => (
-        <button 
-          key={status._id} 
-          onClick={() => api.markStatusSeen(status._id)} 
-          className="flex w-16 shrink-0 flex-col items-center gap-2 transition duration-200 hover:scale-105"
-        >
-          <div className="rounded-2xl bg-gradient-to-br from-cyan-400 to-aqua-300 p-1 ring-2 ring-cyan-400/30">
-            <Avatar user={status.user} size="lg" />
+    <>
+      <div className="flex gap-3 overflow-x-auto border-b border-aqua-100/40 px-3 py-4 scrollbar-hide">
+        <button type="button" onClick={() => inputRef.current?.click()} className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5">
+          <div className="relative">
+            <Avatar user={me} size="lg" statusRing={userHasActiveStatus(statuses, meId)} />
+            <span className="absolute -bottom-0.5 -right-0.5 grid h-5 w-5 place-items-center rounded-full border-2 border-white bg-cyan-500 text-white">
+              <Plus size={12} />
+            </span>
           </div>
-          <span className="w-full truncate text-xs font-bold text-cyan-900 text-center">{status.user.displayName}</span>
+          <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">Add</span>
+          <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => onCreate(e.target.files?.[0])} />
         </button>
-      ))}
-    </div>
+
+        <button type="button" onClick={() => onCreate()} className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5">
+          <Avatar user={me} size="lg" />
+          <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">Text</span>
+        </button>
+
+        {bundles
+          .filter((bundle) => bundle.userId !== meId)
+          .map((bundle) => (
+            <button
+              key={bundle.userId}
+              type="button"
+              onClick={() => openBundle(bundle)}
+              className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1.5 transition active:scale-95"
+            >
+              <Avatar
+                user={bundle.user}
+                size="lg"
+                statusRing={userHasUnviewedStatus(statuses, bundle.userId, meId)}
+              />
+              <span className="w-full truncate text-center text-[11px] font-bold text-cyan-900">
+                {bundle.user?.displayName || 'Contact'}
+              </span>
+            </button>
+          ))}
+      </div>
+
+      {viewerBundle && <StatusViewer bundle={viewerBundle} onClose={() => setViewerBundle(null)} />}
+    </>
   );
 }

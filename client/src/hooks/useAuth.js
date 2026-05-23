@@ -111,6 +111,7 @@ export const useAuth = () => {
         localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
         
         setProfile(synced);
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
       } catch (err) {
         const message = err.message || 'Could not load your profile.';
         setError(message);
@@ -149,6 +150,16 @@ export const useAuth = () => {
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid || needsEmailVerification) return undefined;
+    return api.subscribeUser(uid, (user) => {
+      if (!user) return;
+      setProfile((current) => ({ ...current, ...user }));
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(user));
+    });
+  }, [firebaseUser?.uid, needsEmailVerification]);
 
   const value = useMemo(
     () => ({
