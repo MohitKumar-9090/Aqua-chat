@@ -1,7 +1,16 @@
+import { useLayoutEffect } from 'react';
 import Avatar from '../../components/Avatar.jsx';
 
 export default function CallModal({ state, localVideoRef, remoteVideoRef, onAnswer, onEnd }) {
   const isVideo = state.callType === 'video';
+
+  useLayoutEffect(() => {
+    if (!isVideo) return;
+    const remote = remoteVideoRef.current;
+    const local = localVideoRef.current;
+    if (remote?.srcObject) remote.play().catch(() => {});
+    if (local?.srcObject) local.play().catch(() => {});
+  }, [isVideo, state.preparing, state.incoming, localVideoRef, remoteVideoRef]);
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-gradient-to-br from-cyan-950/90 to-cyan-900/90 p-3 backdrop-blur-sm sm:p-4">
@@ -10,7 +19,7 @@ export default function CallModal({ state, localVideoRef, remoteVideoRef, onAnsw
           {isVideo ? (
             <>
               <video ref={remoteVideoRef} autoPlay playsInline className="h-full min-h-48 w-full bg-cyan-950 object-cover sm:min-h-64" />
-              <video ref={localVideoRef} autoPlay muted playsInline className="h-full min-h-48 w-full bg-cyan-800 object-cover sm:min-h-64" />
+              <video ref={localVideoRef} autoPlay muted playsInline className="h-full min-h-48 w-full bg-cyan-800 object-cover object-right sm:min-h-64" />
             </>
           ) : (
             <div className="flex flex-col items-center gap-4 p-8">

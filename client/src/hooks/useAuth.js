@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getRedirectResult, onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, isPasswordProvider } from '../firebase.js';
-import { api } from '../api.js';
+import { api, primeUserCache } from '../api.js';
 import { stopPresenceSession } from '../services/presence.js';
 import { usePresenceSession } from './usePresenceSession.js';
 
@@ -111,6 +111,7 @@ export const useAuth = () => {
         localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
         
         setProfile(synced);
+        primeUserCache(synced);
         localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
       } catch (err) {
         const message = err.message || 'Could not load your profile.';
@@ -156,6 +157,7 @@ export const useAuth = () => {
     if (!uid || needsEmailVerification) return undefined;
     return api.subscribeUser(uid, (user) => {
       if (!user) return;
+      primeUserCache(user);
       setProfile((current) => ({ ...current, ...user }));
       localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(user));
     });

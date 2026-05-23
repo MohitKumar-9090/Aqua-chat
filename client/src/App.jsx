@@ -1,10 +1,20 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Home, LogOut, Search, Settings, Users, WifiOff } from 'lucide-react';
 import EmailVerificationPanel from './components/auth/EmailVerificationPanel.jsx';
 import Avatar from './components/Avatar.jsx';
 import LoadingSpinner from './components/LoadingSpinner.jsx';
 import ToastContainer from './components/ToastContainer.jsx';
-import { api, mergeWithPendingMessages, setTyping as setFirebaseTyping, subscribeChats, subscribeMessages, subscribePresence, subscribeTyping } from './api.js';
+import {
+  api,
+  mergeWithPendingMessages,
+  messagesListEqual,
+  primeUserCache,
+  setTyping as setFirebaseTyping,
+  subscribeChats,
+  subscribeMessages,
+  subscribePresence,
+  subscribeTyping
+} from './api.js';
 import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
@@ -157,6 +167,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const callUnsubscribersRef = useRef([]);
   const hasAutoSelectedChatRef = useRef(false);
   const selectedChatRef = useRef(selectedChat);
@@ -312,9 +323,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
       if (activeMessagesChatRef.current !== chatId) return;
-      setMessages((current) => mergeWithPendingMessages(nextMessages, current));
+      startTransition(() => {
+        setMessages((current) => {
+          const next = mergeWithPendingMessages(nextMessages, current);
+          return messagesListEqual(current, next) ? current : next;
+        });
+      });
       clearTimeout(seenTimerRef.current);
-      seenTimerRef.current = setTimeout(() => api.seen(chatId).catch(console.error), 900);
+      seenTimerRef.current = setTimeout(() => api.seen(chatId).catch(console.error), 1200);
     });
     const unsubscribeTyping = subscribeTyping(chatId, setTyping);
     return () => {
@@ -396,6 +412,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const tempId = `temp_${Date.now()}`;
     const optimistic = {
       _id: tempId,
+      localKey: tempId,
       pending: true,
       chat: chatId,
       sender: profile,
@@ -418,12 +435,18 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     setSendEpoch((epoch) => epoch + 1);
     setMessages((current) => [...current, optimistic]);
-    await setFirebaseTyping(chatId, false);
+    setFirebaseTyping(chatId, false).catch(console.error);
 
     try {
-      const { message } = await api.sendMessage({ chatId, ...payload });
+      const { message } = await api.sendMessage({ chatId, sender: profile, ...payload });
       if (activeMessagesChatRef.current !== chatId) return;
-      setMessages((current) => mergeWithPendingMessages([message], current.filter((item) => item._id !== tempId)));
+      setMessages((current) => {
+        const next = mergeWithPendingMessages(
+          [{ ...message, localKey: tempId }],
+          current.filter((item) => item._id !== tempId)
+        );
+        return messagesListEqual(current, next) ? current : next;
+      });
       setChats((current) =>
         current.map((chat) =>
           chat._id === chatId
@@ -464,12 +487,21 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const attachLocalStream = (stream, callType) => {
     localStreamRef.current = stream;
     if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    localVideoRef.current?.play?.().catch(() => {});
     setCallState((current) => ({
       ...current,
       active: true,
       callType,
       cameraOff: callType === 'voice'
     }));
+  };
+
+  const attachRemoteVideo = () => {
+    const el = remoteVideoRef.current;
+    const stream = remoteStreamRef.current;
+    if (!el || !stream) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    el.play?.().catch(() => {});
   };
 
   const signalingUid = () => {
@@ -497,7 +529,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         getCallMediaStream(callType),
         calls.createPeerConnection(
           (remoteStream) => {
-            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+            remoteStreamRef.current = remoteStream;
+            attachRemoteVideo();
           },
           (candidate) => {
             if (!iceReady) return;
@@ -511,19 +544,26 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       attachLocalStream(stream, callType);
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       peerConnectionRef.current = pc;
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') attachRemoteVideo();
+      };
 
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room || !peerConnectionRef.current) return;
         if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
           await peerConnectionRef.current.flushRemoteIceCandidates();
+          attachRemoteVideo();
         }
         if (room.status === 'ended') endCall();
       });
       callUnsubscribersRef.current.push(roomListener);
 
       if (isCaller) {
-        const offer = await pc.createOffer();
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: callType === 'video'
+        });
         await pc.setLocalDescription(offer);
         await calls.publishCallOffer(callId, offer);
         iceReady = true;
@@ -536,7 +576,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
-        const answer = await pc.createAnswer();
+        const answer = await pc.createAnswer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: callType === 'video'
+        });
         await pc.setLocalDescription(answer);
         await calls.sendCallAnswer(callId, uid, answer);
         iceReady = true;
@@ -549,8 +592,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       }
     } finally {
       setCallState((current) => (current ? { ...current, preparing: false } : current));
+      attachRemoteVideo();
     }
   };
+
+  useEffect(() => {
+    if (!callState?.active || callState?.callType !== 'video') return;
+    attachRemoteVideo();
+  }, [callState?.active, callState?.callType, callState?.preparing, callState?.incoming]);
 
   const startCall = async (callType) => {
     if (!selectedPeer || callState?.active) return;
@@ -610,6 +659,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     peerConnectionRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+    remoteStreamRef.current = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     if (endingCallId && to) {
       getCallRuntime().then((calls) => calls.endCallRoom(endingCallId, from, to)).catch(console.error);
     }

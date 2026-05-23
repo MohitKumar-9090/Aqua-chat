@@ -134,6 +134,7 @@ video {
 /* Message Texture Background */
 .message-texture {
   overflow-anchor: auto;
+  scroll-behavior: auto;
   background-image:
     linear-gradient(135deg, rgba(6, 182, 212, 0.03) 25%, transparent 25%),
     linear-gradient(225deg, rgba(6, 182, 212, 0.03) 25%, transparent 25%),

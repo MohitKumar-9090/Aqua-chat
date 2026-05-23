@@ -49,7 +49,7 @@ function MessageList({
           const mine = message.sender?._id === meId || message.senderId === meId;
           return (
             <MessageBubble
-              key={message._id}
+              key={message.localKey || message._id}
               message={message}
               mine={mine}
               showSender={chat?.type === 'group'}

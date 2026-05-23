@@ -78,9 +78,22 @@ const presentUser = (id, data = {}) => ({
   followsMe: Boolean(data.followsMe)
 });
 
+const userCache = new Map();
+
 const readUser = async (uid) => {
   const snap = await getDoc(doc(firestore, 'users', uid));
   return snap.exists() ? presentUser(snap.id, snap.data()) : null;
+};
+
+const readUserCached = async (uid) => {
+  if (userCache.has(uid)) return userCache.get(uid);
+  const user = await readUser(uid);
+  if (user) userCache.set(uid, user);
+  return user;
+};
+
+export const primeUserCache = (user) => {
+  if (user?._id) userCache.set(user._id, user);
 };
 
 const usersByIds = async (ids = []) => {
@@ -184,9 +197,32 @@ export { startPresenceSession as setCurrentPresence, touchPresence } from './ser
 export const subscribeChats = (handler) => {
   const uid = currentUid();
   const q = query(collection(firestore, 'chats'), where('participantIds', 'array-contains', uid));
+  const chatCache = new Map();
+
+  const emit = () => {
+    handler([...chatCache.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+  };
+
   return onSnapshot(q, async (snap) => {
-    const chats = await Promise.all(snap.docs.map(chatDocToObject));
-    handler(chats.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+    const changes = snap.docChanges();
+    if (!changes.length) {
+      chatCache.clear();
+      const chats = await Promise.all(snap.docs.map((docSnap) => chatDocToObject(docSnap)));
+      chats.forEach((chat) => chatCache.set(chat._id, chat));
+      emit();
+      return;
+    }
+
+    await Promise.all(
+      changes.map(async (change) => {
+        if (change.type === 'removed') {
+          chatCache.delete(change.doc.id);
+          return;
+        }
+        chatCache.set(change.doc.id, await chatDocToObject(change.doc));
+      })
+    );
+    emit();
   });
 };
 
@@ -278,71 +314,118 @@ const mapStatusDoc = async (statusSnap) => {
   };
 };
 
-const applySnapshot = (snap, chatId, handler) => {
-  const unique = new Map();
-  snap.docs.forEach((docSnap) => {
-    unique.set(docSnap.id, mapMessageDoc(docSnap, chatId));
-  });
-  handler(sortMessages([...unique.values()]));
+const messageListSignature = (messages) =>
+  messages.map((m) => `${m._id}:${m.status}:${m.pending ? 1 : 0}:${m.seenBy?.length || 0}`).join('|');
+
+export const messagesListEqual = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return messageListSignature(a) === messageListSignature(b);
 };
 
 export const subscribeMessages = (chatId, handler) => {
   let unsubscribe = () => {};
   let activeChatId = chatId;
-  const queries = [
-    query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100)),
-    query(collection(firestore, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc'), limit(100)),
-    query(collection(firestore, 'chats', chatId, 'messages'), limit(100))
-  ];
+  const messageMap = new Map();
+  const primaryQuery = query(
+    collection(firestore, 'chats', chatId, 'messages'),
+    orderBy('clientCreatedAt', 'asc'),
+    limit(100)
+  );
 
-  const attachAt = (index = 0) => {
-    if (index >= queries.length) return;
+  const emit = () => {
+    handler(sortMessages([...messageMap.values()]));
+  };
+
+  const attach = (q) => {
     unsubscribe = onSnapshot(
-      queries[index],
+      q,
       (snap) => {
         if (activeChatId !== chatId) return;
-        applySnapshot(snap, chatId, handler);
+        if (!snap.docChanges().length) {
+          messageMap.clear();
+          snap.docs.forEach((docSnap) => messageMap.set(docSnap.id, mapMessageDoc(docSnap, chatId)));
+        } else {
+          snap.docChanges().forEach((change) => {
+            if (change.type === 'removed') {
+              messageMap.delete(change.doc.id);
+              return;
+            }
+            messageMap.set(change.doc.id, mapMessageDoc(change.doc, chatId));
+          });
+        }
+        emit();
       },
       (error) => {
         console.error('Message listener error:', error);
-        if (index + 1 < queries.length) attachAt(index + 1);
+        if (q === primaryQuery) {
+          attach(query(collection(firestore, 'chats', chatId, 'messages'), limit(100)));
+        }
       }
     );
   };
 
-  attachAt(0);
+  attach(primaryQuery);
   return () => {
     activeChatId = null;
+    messageMap.clear();
     unsubscribe();
   };
 };
 
+const matchesPendingMessage = (pending, server) =>
+  server.senderId === pending.senderId &&
+  server.type === pending.type &&
+  server.body === pending.body &&
+  server.mediaUrl === pending.mediaUrl &&
+  Math.abs((server.clientCreatedAt || 0) - (pending.clientCreatedAt || 0)) < 60000;
+
 export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
   const pending = currentMessages.filter((item) => item.pending);
+  if (!pending.length) return serverMessages;
+
   const merged = new Map();
-  serverMessages.forEach((item) => merged.set(item._id, item));
+  const claimedPending = new Set();
+
+  serverMessages.forEach((server) => {
+    const match = pending.find((item) => !claimedPending.has(item._id) && matchesPendingMessage(item, server));
+    if (match) {
+      claimedPending.add(match._id);
+      merged.set(server._id, {
+        ...server,
+        localKey: match.localKey || match._id,
+        pending: false
+      });
+      return;
+    }
+    merged.set(server._id, server);
+  });
 
   pending.forEach((item) => {
-    const matched = serverMessages.some(
-      (server) =>
-        server.senderId === item.senderId &&
-        server.type === item.type &&
-        server.body === item.body &&
-        server.mediaUrl === item.mediaUrl &&
-        Math.abs((server.clientCreatedAt || 0) - (item.clientCreatedAt || 0)) < 60000
-    );
-    if (!matched) merged.set(item._id, item);
+    if (!claimedPending.has(item._id)) merged.set(item._id, item);
   });
 
   return sortMessages([...merged.values()]);
 };
+
+const typingUserCache = new Map();
 
 export const subscribeTyping = (chatId, handler) => {
   const uid = currentUid();
   return onValue(dbRef(realtimeDb, `typing/${chatId}`), async (snap) => {
     const typing = snap.val() || {};
     const otherUid = Object.keys(typing).find((id) => id !== uid && typing[id]?.isTyping);
-    handler(otherUid ? await readUser(otherUid) : null);
+    if (!otherUid) {
+      handler(null);
+      return;
+    }
+    if (typingUserCache.has(otherUid)) {
+      handler(typingUserCache.get(otherUid));
+      return;
+    }
+    const user = await readUserCached(otherUid);
+    if (user) typingUserCache.set(otherUid, user);
+    handler(user);
   });
 };
 
@@ -514,16 +597,11 @@ export const api = {
     };
   },
 
-  sendMessage: async ({ chatId, ...payload }) => {
+  sendMessage: async ({ chatId, sender: senderInput, ...payload }) => {
     const uid = currentUid();
     const chatRef = doc(firestore, 'chats', chatId);
-    const chatSnap = await getDoc(chatRef);
-    if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
-      throw new Error('Chat not found or you are not a participant.');
-    }
-
     const messageRef = doc(collection(firestore, 'chats', chatId, 'messages'));
-    const sender = await readUser(uid);
+    const sender = senderInput || (await readUserCached(uid));
     const clientCreatedAt = Date.now();
     const message = {
       chat: chatId,
@@ -550,13 +628,26 @@ export const api = {
     const preview = buildLastMessagePreview(messageRef.id, message, clientCreatedAt);
 
     await runTransaction(firestore, async (transaction) => {
+      const chatSnap = await transaction.get(chatRef);
+      if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
+        throw new Error('Chat not found or you are not a participant.');
+      }
       transaction.set(messageRef, message);
       transaction.update(chatRef, {
         lastMessage: preview,
         updatedAt: serverTimestamp()
       });
     });
-    return { message: { ...preview, seenBy: [uid], deliveredTo: [uid], deletedFor: [], deletedForEveryone: false } };
+
+    return {
+      message: {
+        _id: messageRef.id,
+        id: messageRef.id,
+        ...message,
+        createdAt: new Date(clientCreatedAt).toISOString(),
+        pending: false
+      }
+    };
   },
 
   deleteMessageForMe: async (chatId, messageId) => {
