@@ -14,6 +14,23 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if signedIn() && request.auth.uid == userId;
+
+      match /blocked/{blockedUid} {
+        allow read: if signedIn() && (
+          request.auth.uid == userId ||
+          request.auth.uid == blockedUid
+        );
+        allow write: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /blockedBy/{blockerId} {
+        allow read: if signedIn() && (
+          request.auth.uid == userId ||
+          request.auth.uid == blockerId
+        );
+        allow create, delete: if signedIn();
+        allow update: if false;
+      }
     }
 
     match /chats/{chatId} {
@@ -30,8 +47,11 @@ service cloud.firestore {
 
     match /statuses/{statusId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if signedIn();
+      allow create: if signedIn() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.expiresAt is timestamp;
+      allow update: if signedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy']);
     }
   }
 }

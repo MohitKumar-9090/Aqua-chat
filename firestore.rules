@@ -16,12 +16,19 @@ service cloud.firestore {
       allow create, update: if signedIn() && request.auth.uid == userId;
 
       match /blocked/{blockedUid} {
-        allow read: if signedIn() && request.auth.uid == userId;
+        // Owner lists who they blocked; others may read only their own entry (send/call checks).
+        allow read: if signedIn() && (
+          request.auth.uid == userId ||
+          request.auth.uid == blockedUid
+        );
         allow write: if signedIn() && request.auth.uid == userId;
       }
 
       match /blockedBy/{blockerId} {
-        allow read: if signedIn() && request.auth.uid == userId;
+        allow read: if signedIn() && (
+          request.auth.uid == userId ||
+          request.auth.uid == blockerId
+        );
         allow create, delete: if signedIn();
         allow update: if false;
       }
@@ -44,7 +51,8 @@ service cloud.firestore {
       allow create: if signedIn() &&
         request.resource.data.userId == request.auth.uid &&
         request.resource.data.expiresAt is timestamp;
-      allow update: if signedIn();
+      allow update: if signedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy']);
     }
   }
 }
