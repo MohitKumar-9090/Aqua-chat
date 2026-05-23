@@ -5,17 +5,7 @@ export default defineConfig({
   envPrefix: ['VITE_', 'REACT_APP_'],
   plugins: [react()],
   build: {
-    // Optimize bundle size
-    minify: 'terser',
-    terserOptions: {
-      compress: {
-        drop_console: true,
-        drop_debugger: true,
-      },
-      format: {
-        comments: false,
-      },
-    },
+    minify: 'esbuild',
     // Enable code splitting for better caching
     rollupOptions: {
       output: {

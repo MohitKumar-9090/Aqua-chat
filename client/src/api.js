@@ -131,26 +131,59 @@ export const subscribeChats = (handler) => {
   });
 };
 
-export const subscribeMessages = (chatId, handler) => {
-  const q = query(collection(firestore, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc'), limit(100));
-  return onSnapshot(q, (snap) => {
-    handler(snap.docs.map((messageSnap) => {
-      const data = messageSnap.data();
-      return {
-        _id: messageSnap.id,
-        id: messageSnap.id,
-        chat: chatId,
-        sender: data.sender,
-        type: data.type || 'text',
-        body: data.body || '',
-        mediaUrl: data.mediaUrl || '',
-        status: data.status || 'sent',
-        seenBy: data.seenBy || [],
-        deliveredTo: data.deliveredTo || [],
-        createdAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || new Date().toISOString()
-      };
-    }));
+const messageCreatedAt = (data) => {
+  if (data.createdAt?.toDate) return data.createdAt.toDate().toISOString();
+  if (typeof data.createdAt === 'string' && data.createdAt) return data.createdAt;
+  if (data.clientCreatedAt) return new Date(data.clientCreatedAt).toISOString();
+  return new Date().toISOString();
+};
+
+const mapMessageDoc = (messageSnap, chatId) => {
+  const data = messageSnap.data();
+  const sender = data.sender && typeof data.sender === 'object'
+    ? data.sender
+    : { _id: data.senderId, displayName: 'AquaChat user' };
+
+  return {
+    _id: messageSnap.id,
+    id: messageSnap.id,
+    chat: chatId,
+    sender,
+    senderId: data.senderId || sender._id,
+    type: data.type || 'text',
+    body: data.body || '',
+    mediaUrl: data.mediaUrl || '',
+    status: data.status || 'sent',
+    seenBy: data.seenBy || [],
+    deliveredTo: data.deliveredTo || [],
+    clientCreatedAt: data.clientCreatedAt || (data.createdAt?.toDate?.() ? data.createdAt.toDate().getTime() : 0),
+    createdAt: messageCreatedAt(data)
+  };
+};
+
+const sortMessages = (messages) =>
+  [...messages].sort((a, b) => {
+    const aTime = new Date(a.createdAt).getTime() || a.clientCreatedAt || 0;
+    const bTime = new Date(b.createdAt).getTime() || b.clientCreatedAt || 0;
+    return aTime - bTime;
   });
+
+export const subscribeMessages = (chatId, handler) => {
+  const q = query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const unique = new Map();
+      snap.docs.forEach((docSnap) => {
+        unique.set(docSnap.id, mapMessageDoc(docSnap, chatId));
+      });
+      handler(sortMessages([...unique.values()]));
+    },
+    (error) => {
+      console.error('Message listener error:', error);
+      handler([]);
+    }
+  );
 };
 
 export const subscribeTyping = (chatId, handler) => {
@@ -301,7 +334,7 @@ export const api = {
   },
 
   messages: async (chatId) => {
-    const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc'), limit(100)));
+    const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100)));
     return {
       messages: snap.docs.map((docSnap) => ({ _id: docSnap.id, chat: chatId, ...docSnap.data(), createdAt: docSnap.data().createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString() }))
     };
@@ -312,6 +345,7 @@ export const api = {
     const chatRef = doc(firestore, 'chats', chatId);
     const messageRef = doc(collection(firestore, 'chats', chatId, 'messages'));
     const sender = await readUser(uid);
+    const clientCreatedAt = Date.now();
     const message = {
       chat: chatId,
       sender,
@@ -322,17 +356,31 @@ export const api = {
       status: 'sent',
       seenBy: [uid],
       deliveredTo: [uid],
+      clientCreatedAt,
       createdAt: serverTimestamp()
+    };
+
+    const preview = {
+      _id: messageRef.id,
+      chat: chatId,
+      sender,
+      senderId: uid,
+      type: message.type,
+      body: message.body,
+      mediaUrl: message.mediaUrl,
+      status: 'sent',
+      createdAt: new Date(clientCreatedAt).toISOString(),
+      clientCreatedAt
     };
 
     await runTransaction(firestore, async (transaction) => {
       transaction.set(messageRef, message);
       transaction.update(chatRef, {
-        lastMessage: { ...message, _id: messageRef.id, createdAt: new Date().toISOString() },
+        lastMessage: preview,
         updatedAt: serverTimestamp()
       });
     });
-    return { message: { ...message, _id: messageRef.id, createdAt: new Date().toISOString() } };
+    return { message: { ...preview, seenBy: [uid], deliveredTo: [uid] } };
   },
 
   seen: async (chatId) => {

@@ -2,7 +2,17 @@
 import { useState } from 'react';
 import { Mail, Phone, Eye, EyeOff, User, Lock, UserPlus } from 'lucide-react';
 import { completePhoneLogin, emailLogin, emailSignup, googleLogin, phoneLogin } from '../firebase.js';
-import { error as showError, success as showSuccess } from '../utils/toast.js';
+
+const mapAuthError = (err) => {
+  const code = err?.code || '';
+  if (code === 'auth/popup-blocked') return 'Popup blocked. Trying redirect sign-in...';
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') return 'Invalid email or password.';
+  if (code === 'auth/email-already-in-use') return 'This email is already registered.';
+  if (code === 'auth/too-many-requests') return 'Too many attempts. Please wait and try again.';
+  if (code === 'auth/network-request-failed') return 'Network error. Check your connection.';
+  if (code === 'auth/unauthorized-domain') return 'This domain is not authorized in Firebase. Add it under Authentication → Settings → Authorized domains.';
+  return err?.message || 'Authentication failed.';
+};
 
 export default function AuthScreen() {
   const [mode, setMode] = useState('login');
@@ -37,7 +47,7 @@ export default function AuthScreen() {
         await emailLogin(email, password);
       }
     } catch (err) {
-      setError(err.message);
+      setError(mapAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -69,7 +79,22 @@ export default function AuthScreen() {
         await completePhoneLogin(confirmation, otp, phoneName.trim());
       }
     } catch (err) {
-      setError(err.message);
+      setError(mapAuthError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitGoogle = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await googleLogin();
+      if (result?.redirecting) {
+        setError('Redirecting to Google sign-in...');
+      }
+    } catch (err) {
+      setError(mapAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -180,23 +205,8 @@ export default function AuthScreen() {
 
         {/* Google Button */}
         <button
-          onClick={async () => {
-            setBusy(true);
-            setError('');
-            try {
-              const result = await googleLogin();
-              if (!result?.redirecting) {
-                // Popup succeeded
-              } else {
-                // Redirect in progress
-              }
-            } catch (err) {
-              const message = err.message || 'Google Sign-In failed. Please try again.';
-              setError(message);
-            } finally {
-              setBusy(false);
-            }
-          }}
+          type="button"
+          onClick={submitGoogle}
           disabled={busy}
           className="w-full flex items-center justify-center gap-2 sm:gap-3 rounded-2xl border border-aqua-200/50 bg-white px-4 py-2.5 sm:py-3.5 font-bold text-slate-700 text-sm sm:text-base transition duration-200 hover:bg-aqua-50/60 disabled:opacity-60 disabled:cursor-not-allowed mb-2"
         >

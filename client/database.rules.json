@@ -13,6 +13,18 @@
           ".write": "auth != null && auth.uid === $uid"
         }
       }
+    },
+    "calls": {
+      "$callId": {
+        ".read": "auth != null && (data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
+        ".write": "auth != null && (!data.exists() || data.child('from').val() === auth.uid || data.child('to').val() === auth.uid)",
+        "candidates": {
+          "$uid": {
+            ".read": "auth != null",
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        }
+      }
     }
   }
 }

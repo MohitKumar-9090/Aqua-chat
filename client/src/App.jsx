@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowLeft,
   BadgeCheck,
   Bell,
   CheckCheck,
@@ -33,6 +34,17 @@ import { api, setTyping as setFirebaseTyping, subscribeChats, subscribeMessages,
 import { changePassword, initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
 import { registerBackgroundSync, requestNotificationPermission } from './pwa.js';
+import { useIsMobile } from './hooks/useIsMobile.js';
+import {
+  createPeerConnection,
+  endCallRoom,
+  pushIceCandidate,
+  sendCallAnswer,
+  startOutgoingCall,
+  subscribeCallRoom,
+  subscribeIceCandidates,
+  subscribeIncomingCalls
+} from './utils/calls.js';
 
 const emptyRecorder = { recording: false, stream: null, mediaRecorder: null, chunks: [] };
 
@@ -134,9 +146,9 @@ export default function App() {
     </>
   );
 }
-}
 
 function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+  const isMobile = useIsMobile();
   const [chats, setChats] = useState([]);
   const [users, setUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(false);
@@ -151,6 +163,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callState, setCallState] = useState(null);
+  const [activeCallId, setActiveCallId] = useState(null);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [showInstall, setShowInstall] = useState(false);
   const [isStandalone, setIsStandalone] = useState(() => window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone);
@@ -159,6 +172,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStreamRef = useRef(null);
+  const callUnsubscribersRef = useRef([]);
+  const hasAutoSelectedChatRef = useRef(false);
+  const selectedChatRef = useRef(selectedChat);
+  selectedChatRef.current = selectedChat;
 
   const selectedPeer = useMemo(() => directPeer(selectedChat, profile), [selectedChat, profile]);
 
@@ -180,13 +197,25 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
   };
 
+  const maybeAutoSelectChat = (chatList) => {
+    if (selectedChatRef.current || isMobile || hasAutoSelectedChatRef.current || !chatList[0]) return;
+    hasAutoSelectedChatRef.current = true;
+    setSelectedChat(chatList[0]);
+  };
+
   const refresh = async () => {
     const [chatData, statusData, userData] = await Promise.all([api.chats(), api.statuses(), api.users(query)]);
     setChats(applyPresenceToChats(chatData.chats, presenceRef.current));
     setStatuses(statusData.statuses);
     setUsers(userData.users || []);
     setTotalUsers(userData.totalUsers || 0);
-    if (!selectedChat && chatData.chats[0]) setSelectedChat(chatData.chats[0]);
+    maybeAutoSelectChat(chatData.chats);
+  };
+
+  const closeChat = () => {
+    setSelectedChat(null);
+    setMessages([]);
+    setTyping(null);
   };
 
   useEffect(() => {
@@ -224,14 +253,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     const unsubscribeChats = subscribeChats((nextChats) => {
       setChats(applyPresenceToChats(nextChats, presenceRef.current));
-      if (!selectedChat && nextChats[0]) setSelectedChat(nextChats[0]);
+      maybeAutoSelectChat(nextChats);
     });
 
     return () => {
       unsubscribePresence?.();
       unsubscribeChats?.();
     };
-  }, [selectedChat?._id]);
+  }, [isMobile]);
 
   useEffect(() => {
     const beforeInstall = (event) => {
@@ -296,12 +325,26 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [query]);
 
   useEffect(() => {
-    if (!selectedChat) return;
-    const unsubscribeMessages = subscribeMessages(selectedChat._id, (nextMessages) => {
-      setMessages(nextMessages);
-      api.seen(selectedChat._id).catch(console.error);
+    if (!selectedChat) {
+      setMessages([]);
+      setTyping(null);
+      return;
+    }
+
+    const chatId = selectedChat._id;
+    setMessages([]);
+    setTyping(null);
+
+    const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
+      setMessages((current) => {
+        const pending = current.filter((item) => item.pending);
+        const merged = new Map();
+        [...nextMessages, ...pending].forEach((item) => merged.set(item._id, item));
+        return [...merged.values()].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      });
+      api.seen(chatId).catch(console.error);
     });
-    const unsubscribeTyping = subscribeTyping(selectedChat._id, setTyping);
+    const unsubscribeTyping = subscribeTyping(chatId, setTyping);
     return () => {
       unsubscribeMessages?.();
       unsubscribeTyping?.();
@@ -358,8 +401,44 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const sendPayload = async (payload) => {
     if (!selectedChat) return;
-    await setFirebaseTyping(selectedChat._id, false);
-    await api.sendMessage({ chatId: selectedChat._id, ...payload });
+    const chatId = selectedChat._id;
+    const tempId = `temp_${Date.now()}`;
+    const optimistic = {
+      _id: tempId,
+      pending: true,
+      chat: chatId,
+      sender: profile,
+      senderId: profile._id,
+      type: payload.type || 'text',
+      body: payload.body || '',
+      mediaUrl: payload.mediaUrl || '',
+      status: 'sending',
+      createdAt: new Date().toISOString(),
+      clientCreatedAt: Date.now()
+    };
+
+    setMessages((current) => [...current, optimistic]);
+    await setFirebaseTyping(chatId, false);
+
+    try {
+      const { message } = await api.sendMessage({ chatId, ...payload });
+      setMessages((current) =>
+        current
+          .filter((item) => item._id !== tempId)
+          .concat(message)
+          .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+      );
+      setChats((current) =>
+        current.map((chat) =>
+          chat._id === chatId
+            ? { ...chat, lastMessage: message, updatedAt: message.createdAt }
+            : chat
+        )
+      );
+    } catch (error) {
+      setMessages((current) => current.filter((item) => item._id !== tempId));
+      console.error(error);
+    }
   };
 
   const createStatus = async (file) => {
@@ -374,63 +453,149 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setStatuses(next);
   };
 
-  const makePeerConnection = (to) => {
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-    pc.onicecandidate = () => {};
-    pc.ontrack = (event) => {
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
-    };
+  const cleanupCallListeners = () => {
+    callUnsubscribersRef.current.forEach((unsubscribe) => unsubscribe?.());
+    callUnsubscribersRef.current = [];
+  };
+
+  const attachLocalStream = (stream, callType) => {
+    localStreamRef.current = stream;
+    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    setCallState((current) => ({
+      ...current,
+      active: true,
+      callType,
+      cameraOff: callType === 'voice'
+    }));
+  };
+
+  const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null }) => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: callType === 'video'
+    });
+    attachLocalStream(stream, callType);
+
+    const pc = createPeerConnection(
+      (remoteStream) => {
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+      },
+      (candidate) => pushIceCandidate(callId, profile._id, candidate).catch(console.error)
+    );
+
+    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
     peerConnectionRef.current = pc;
-    return pc;
+
+    const remoteCandidates = subscribeIceCandidates(callId, remoteUid, (candidate) => {
+      if (!candidate || !peerConnectionRef.current) return;
+      peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+    });
+    callUnsubscribersRef.current.push(remoteCandidates);
+
+    if (isCaller) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await startOutgoingCall({ callId, from: profile._id, to: remoteUid, callType, offer });
+    } else if (remoteOffer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await sendCallAnswer(callId, answer);
+    }
+
+    const roomListener = subscribeCallRoom(callId, async (room) => {
+      if (!room || !peerConnectionRef.current) return;
+      if (!isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
+      }
+      if (isCaller && room.answer && !peerConnectionRef.current.currentRemoteDescription) {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(room.answer));
+      }
+      if (room.status === 'ended') endCall();
+    });
+    callUnsubscribersRef.current.push(roomListener);
   };
 
   const startCall = async (callType) => {
-    if (!selectedPeer) return;
-    window.alert('Firebase call signaling is not enabled yet.');
-    return;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' });
-    localStreamRef.current = stream;
-    setCallState({ active: true, incoming: false, to: selectedPeer._id, callType, caller: selectedPeer, muted: false, cameraOff: callType === 'voice' });
-    setTimeout(() => {
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    if (!selectedPeer || callState?.active) return;
+    const callId = `call_${[profile._id, selectedPeer._id].sort().join('_')}_${Date.now()}`;
+    setActiveCallId(callId);
+    setCallState({
+      active: true,
+      incoming: false,
+      callId,
+      callType,
+      caller: selectedPeer,
+      from: profile._id,
+      to: selectedPeer._id
     });
-    const pc = makePeerConnection(selectedPeer._id);
-    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+
+    try {
+      await setupPeer({ callId, remoteUid: selectedPeer._id, callType, isCaller: true });
+    } catch (error) {
+      console.error(error);
+      endCall();
+    }
   };
 
   const answerCall = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callState.callType === 'video' });
-    localStreamRef.current = stream;
-    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-    const pc = makePeerConnection(callState.from);
-    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-    await pc.setRemoteDescription(new RTCSessionDescription(callState.offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    setCallState((current) => ({ ...current, incoming: false }));
+    if (!callState?.callId || !callState?.offer) return;
+    try {
+      await setupPeer({
+        callId: callState.callId,
+        remoteUid: callState.from,
+        callType: callState.callType,
+        isCaller: false,
+        remoteOffer: callState.offer
+      });
+      setCallState((current) => ({ ...current, incoming: false }));
+    } catch (error) {
+      console.error(error);
+      endCall();
+    }
   };
 
   const endCall = () => {
+    cleanupCallListeners();
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+    if (activeCallId) endCallRoom(activeCallId).catch(console.error);
+    setActiveCallId(null);
     setCallState(null);
   };
 
+  useEffect(() => {
+    const unsubscribe = subscribeIncomingCalls(profile._id, async (incoming) => {
+      if (!incoming || callState?.active) return;
+      const caller = users.find((user) => user._id === incoming.from) || { _id: incoming.from, displayName: 'Incoming call' };
+      setActiveCallId(incoming.id);
+      setCallState({
+        active: true,
+        incoming: true,
+        callId: incoming.id,
+        callType: incoming.callType || 'voice',
+        caller,
+        from: incoming.from,
+        to: incoming.to,
+        offer: incoming.offer
+      });
+    });
+    return unsubscribe;
+  }, [profile._id, users, callState?.active]);
+
   return (
-    <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-3 lg:p-4">
+    <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4">
       {!isOnline && (
         <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-50 mx-auto flex max-w-md items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 shadow-soft">
           <WifiOff size={18} />
           Offline mode. Cached chats stay available.
         </div>
       )}
-      <div className="mx-auto grid h-full max-w-7xl overflow-hidden border border-white/60 bg-white/80 shadow-soft-xl backdrop-blur-sm sm:rounded-[2.5rem] lg:grid-cols-[360px_1fr]">
+      <div className="mx-auto grid h-full max-w-7xl overflow-hidden border-0 sm:border border-white/60 bg-white/80 shadow-soft-xl backdrop-blur-sm sm:rounded-[2rem] lg:rounded-[2.5rem] lg:grid-cols-[minmax(280px,360px)_1fr]">
         {/* Sidebar */}
-        <aside className={`${selectedChat ? 'hidden lg:flex' : 'flex'} min-h-0 flex-col border-r border-aqua-100/60 bg-gradient-to-b from-white/95 to-aqua-25/50`}>
+        <aside className={`${selectedChat && isMobile ? 'hidden' : 'flex'} min-h-0 w-full flex-col border-r border-aqua-100/60 bg-gradient-to-b from-white/95 to-aqua-25/50 lg:flex`}>
           {/* Header */}
           <div className="flex items-center justify-between border-b border-aqua-100/40 px-4 py-4">
             <div className="flex items-center gap-3">
@@ -477,7 +642,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           </div>
 
           {/* Chat/People List */}
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-24 sm:pb-3">
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-2 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] sm:pb-3">
             {panel === 'chats' ? (
               chats.length > 0 ? (
                 chats.map((chat) => (
@@ -549,12 +714,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </aside>
 
         {/* Chat Area */}
-        <section className={`${selectedChat ? 'flex' : 'hidden lg:flex'} min-h-0 flex-col`}>
+        <section className={`${selectedChat || !isMobile ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}>
           {selectedChat ? (
             <>
-              <ChatHeader chat={selectedChat} me={profile} typing={typing} onBack={() => setSelectedChat(null)} onAudio={() => startCall('voice')} onVideo={() => startCall('video')} />
+              <ChatHeader chat={selectedChat} me={profile} typing={typing} onBack={closeChat} onAudio={() => startCall('voice')} onVideo={() => startCall('video')} />
               <MessageList messages={messages} me={profile} />
-              <Composer chat={selectedChat} onSend={sendPayload} onUpload={api.upload} />
+              <Composer chat={selectedChat} onSend={sendPayload} onUpload={api.upload} isMobile={isMobile} />
               {selectedChat.type === 'group' && <GroupStrip chat={selectedChat} me={profile} users={users} onRefresh={refresh} />}
             </>
           ) : (
@@ -563,7 +728,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </section>
       </div>
 
-      <nav className={`${selectedChat ? 'hidden' : 'grid'} fixed bottom-0 left-0 right-0 z-30 grid-cols-3 border-t border-aqua-100 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-soft backdrop-blur lg:hidden`}>
+      <nav className={`${selectedChat && isMobile ? 'hidden' : 'grid'} fixed bottom-0 left-0 right-0 z-30 grid-cols-3 border-t border-aqua-100 bg-white/95 px-2 sm:px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-soft backdrop-blur lg:hidden`}>
         <button onClick={() => setPanel('chats')} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-black ${panel === 'chats' ? 'bg-cyan-500 text-white' : 'text-cyan-800'}`}>
           <Home size={19} />
           Chats
@@ -746,8 +911,10 @@ function ChatHeader({ chat, me, typing, onBack, onAudio, onVideo }) {
   const peer = directPeer(chat, me);
 
   return (
-    <header className="flex items-center gap-3 border-b border-aqua-100/40 bg-gradient-to-r from-white/95 to-aqua-25/50 px-3 py-4 backdrop-blur-sm">
-      <button onClick={onBack} className="rounded-2xl px-2 py-2 font-black text-cyan-700 lg:hidden transition duration-200 hover:bg-aqua-100/50">‹</button>
+    <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-aqua-100/40 bg-white/90 px-2 py-3 backdrop-blur-sm sm:gap-3 sm:px-3 sm:py-4">
+      <button type="button" onClick={onBack} aria-label="Back to chats" className="rounded-2xl p-2.5 text-cyan-700 transition duration-200 hover:bg-aqua-100/60 lg:hidden">
+        <ArrowLeft size={22} />
+      </button>
       <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={peer?.isOnline} />
       <div className="min-w-0 flex-1">
         <h2 className="truncate font-black text-cyan-950 text-sm">{chatTitle(chat, me)}</h2>
@@ -772,19 +939,23 @@ function ChatHeader({ chat, me, typing, onBack, onAudio, onVideo }) {
 
 function MessageList({ messages, me }) {
   const bottomRef = useRef(null);
+  const containerRef = useRef(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+    const node = containerRef.current;
+    if (!node) return;
+    const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8 bg-gradient-to-b from-white/50 to-aqua-25/50">
-      <div className="mx-auto flex max-w-3xl flex-col gap-3">
+    <div ref={containerRef} className="message-texture min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-6 sm:py-6">
+      <div className="mx-auto flex max-w-3xl flex-col gap-2 sm:gap-3">
         {messages.map((message) => {
-          const mine = message.sender?._id === me._id || message.sender === me._id;
+          const mine = message.sender?._id === me._id || message.senderId === me._id;
           return (
             <div key={message._id} className={`flex animate-floatIn ${mine ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] rounded-2xl px-5 py-3 shadow-soft ${mine ? 'rounded-br-lg bg-gradient-to-br from-cyan-500 to-aqua-400 text-white' : 'rounded-bl-lg bg-white text-slate-800 border border-aqua-100/60'}`}>
+              <div className={`max-w-[88%] sm:max-w-[85%] rounded-2xl px-4 py-2.5 shadow-soft sm:px-5 sm:py-3 ${mine ? 'rounded-br-md bg-gradient-to-br from-cyan-500 to-aqua-400 text-white' : 'rounded-bl-md border border-aqua-100/60 bg-white text-slate-800'} ${message.pending ? 'opacity-80' : ''}`}>
                 {!mine && <p className="mb-1.5 text-xs font-black text-cyan-600">{message.sender?.displayName}</p>}
                 {message.mediaUrl && <MediaMessage message={message} />}
                 {message.body && <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>}
@@ -808,7 +979,7 @@ function MediaMessage({ message }) {
   return <audio src={message.mediaUrl} controls className="mb-2 w-64 max-w-full" />;
 }
 
-function Composer({ chat, onSend, onUpload }) {
+function Composer({ chat, onSend, onUpload, isMobile }) {
   const [text, setText] = useState('');
   const [uploading, setUploading] = useState(false);
   const [recorder, setRecorder] = useState(emptyRecorder);
@@ -862,8 +1033,11 @@ function Composer({ chat, onSend, onUpload }) {
   };
 
   return (
-    <form onSubmit={submit} className="border-t border-aqua-100/40 bg-gradient-to-t from-aqua-25/50 to-white/95 px-3 py-4 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-3xl items-center gap-2.5">
+    <form
+      onSubmit={submit}
+      className={`composer-keyboard-safe sticky bottom-0 z-20 shrink-0 border-t border-aqua-100/40 bg-white/95 px-2 py-3 backdrop-blur-sm sm:px-3 sm:py-4 ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+0.25rem)]' : ''}`}
+    >
+      <div className="mx-auto flex max-w-3xl items-end gap-1.5 sm:gap-2.5">
         <button type="button" className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Emoji">
           <Smile size={20} />
         </button>
@@ -871,11 +1045,12 @@ function Composer({ chat, onSend, onUpload }) {
           <Paperclip size={20} />
         </button>
         <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(e) => uploadFile(e.target.files?.[0])} />
-        <input 
-          value={text} 
-          onChange={(e) => { setText(e.target.value); type(); }} 
-          placeholder="Message..." 
-          className="min-w-0 flex-1 rounded-2xl border border-aqua-100/60 bg-white px-5 py-3 text-sm placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft" 
+        <input
+          value={text}
+          onChange={(e) => { setText(e.target.value); type(); }}
+          placeholder="Message..."
+          enterKeyHint="send"
+          className="min-w-0 flex-1 rounded-2xl border border-aqua-100/60 bg-white px-4 py-2.5 text-base placeholder-slate-400 outline-none transition duration-200 focus:border-aqua-300/80 focus:shadow-inner-soft sm:px-5 sm:py-3 sm:text-sm"
         />
         <button 
           type="button" 
@@ -885,9 +1060,10 @@ function Composer({ chat, onSend, onUpload }) {
         >
           <Mic size={20} />
         </button>
-        <button 
-          disabled={uploading || !text.trim()} 
-          className="rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 p-2.5 text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-60 disabled:shadow-none" 
+        <button
+          type="submit"
+          disabled={uploading || !text.trim()}
+          className="rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 p-2.5 text-white shadow-lg shadow-cyan-200/50 transition duration-200 hover:shadow-cyan-300/70 disabled:opacity-60 disabled:shadow-none"
           title="Send"
         >
           {uploading ? <Image size={20} className="animate-pulse" /> : <Send size={20} />}
@@ -1099,12 +1275,25 @@ function ProfileSettings({ firebaseUser, profile, setProfile, onClose }) {
 }
 
 function CallModal({ state, localVideoRef, remoteVideoRef, onAnswer, onEnd }) {
+  const isVideo = state.callType === 'video';
+
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-gradient-to-br from-cyan-950/80 to-cyan-900/80 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-40 grid place-items-center bg-gradient-to-br from-cyan-950/90 to-cyan-900/90 p-3 backdrop-blur-sm sm:p-4">
       <div className="w-full max-w-3xl animate-pop overflow-hidden rounded-3xl bg-gradient-to-br from-cyan-950 to-cyan-900 text-white shadow-soft-xl">
-        <div className="grid min-h-[420px] bg-gradient-to-br from-cyan-900 to-cyan-950 sm:grid-cols-2">
-          <video ref={remoteVideoRef} autoPlay playsInline className="h-full min-h-64 w-full bg-cyan-950 object-cover border-r border-cyan-800/50" />
-          <video ref={localVideoRef} autoPlay muted playsInline className="h-full min-h-64 w-full bg-cyan-800 object-cover" />
+        <div className={`grid min-h-[50dvh] bg-gradient-to-br from-cyan-900 to-cyan-950 ${isVideo ? 'sm:grid-cols-2' : 'place-items-center'}`}>
+          {isVideo ? (
+            <>
+              <video ref={remoteVideoRef} autoPlay playsInline className="h-full min-h-48 w-full bg-cyan-950 object-cover sm:min-h-64" />
+              <video ref={localVideoRef} autoPlay muted playsInline className="h-full min-h-48 w-full bg-cyan-800 object-cover sm:min-h-64" />
+            </>
+          ) : (
+            <div className="flex flex-col items-center gap-4 p-8">
+              <Avatar user={state.caller} size="xl" />
+              <p className="text-sm text-cyan-200">Voice call in progress</p>
+              <video ref={remoteVideoRef} autoPlay playsInline className="hidden" />
+              <video ref={localVideoRef} autoPlay muted playsInline className="hidden" />
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-between gap-4 bg-gradient-to-r from-cyan-950 to-cyan-900/80 px-6 py-5 border-t border-cyan-800/30">
           <div>

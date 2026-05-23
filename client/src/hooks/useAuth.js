@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { getRedirectResult, onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../firebase.js';
 import { api, setCurrentPresence } from '../api.js';
 
@@ -34,6 +34,12 @@ export const useAuth = () => {
       setLoading(false);
       return;
     }
+
+    getRedirectResult(auth).catch((err) => {
+      if (err.code !== 'auth/no-auth-event') {
+        setError(err.message || 'Google sign-in redirect failed.');
+      }
+    });
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setLoading(true);

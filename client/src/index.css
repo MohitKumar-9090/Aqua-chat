@@ -148,6 +148,18 @@ video {
   color: inherit;
 }
 
+@supports (height: 100dvh) {
+  .app-shell {
+    height: 100dvh;
+  }
+}
+
+@supports (padding-bottom: env(keyboard-inset-height)) {
+  .composer-keyboard-safe {
+    padding-bottom: calc(env(safe-area-inset-bottom) + env(keyboard-inset-height, 0px));
+  }
+}
+
 @media (display-mode: standalone) {
   body {
     background: #f8fdff;
