@@ -584,28 +584,32 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setCallState((current) => {
       if (!current) return current;
       const speakerOn = !current.speakerOn;
+      const isVideo = current.callType === 'video';
       const audio = remoteAudioRef.current;
       const video = remoteVideoRef.current;
-      if (audio) audio.muted = !speakerOn;
-      if (video) video.muted = !speakerOn;
+      if (audio) audio.muted = isVideo || !speakerOn;
+      if (video) video.muted = !isVideo || !speakerOn;
       return { ...current, speakerOn };
     });
   };
 
   const attachRemoteMedia = () => {
     const stream = remoteStreamRef.current;
+    if (!stream) return;
     const video = remoteVideoRef.current;
     const audio = remoteAudioRef.current;
-    
-    if (stream) {
-      if (video && stream.getVideoTracks().length) {
-        video.srcObject = stream;
-        video.play().catch(() => {});
-      }
-      if (audio) {
-        audio.srcObject = stream;
-        audio.play().catch(() => {});
-      }
+    const isVideo = callStateRef.current?.callType === 'video';
+    const speakerOn = callStateRef.current?.speakerOn !== false;
+
+    if (video) {
+      video.srcObject = stream;
+      video.muted = !isVideo || !speakerOn;
+      video.play().catch(() => {});
+    }
+    if (audio) {
+      audio.srcObject = stream;
+      audio.muted = isVideo || !speakerOn;
+      audio.play().catch(() => {});
     }
   };
 
@@ -663,6 +667,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
           await peerConnectionRef.current.flushRemoteIceCandidates();
         }
+        if (room.status) {
+          setCallState((current) => (current ? { ...current, status: room.status } : current));
+        }
         if (room.status === 'ended') endCall();
       });
       callUnsubscribersRef.current.push(roomListener);
@@ -685,14 +692,39 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         await calls.sendCallAnswer(callId, uid, answer);
       }
     } finally {
-      setCallState((current) => (current ? { ...current, preparing: false } : current));
+      setCallState((current) => {
+        if (!current) return null;
+        if (!isCaller) {
+          return { ...current, preparing: false, incoming: false };
+        }
+        return { ...current, preparing: false };
+      });
     }
   };
 
   useEffect(() => {
     if (!callState?.active) return;
     attachRemoteMedia();
+    // Retry to handle Suspense lazy-mount race: CallModal's video refs
+    // may not exist in the DOM yet when ontrack fires.
+    const retryTimers = [
+      setTimeout(() => attachRemoteMedia(), 100),
+      setTimeout(() => attachRemoteMedia(), 500),
+      setTimeout(() => attachRemoteMedia(), 1500),
+    ];
+    return () => retryTimers.forEach(clearTimeout);
   }, [remoteMediaEpoch]);
+
+  // Re-attach local stream when CallModal mounts (survives Suspense/rerender)
+  useEffect(() => {
+    if (!callState?.active) return;
+    const stream = localStreamRef.current;
+    const video = localVideoRef.current;
+    if (stream && video && video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+  }, [callState?.active, callState?.callType]);
 
   useEffect(() => {
     if (callState?.active && callState?.incoming) {
@@ -721,6 +753,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       caller: selectedPeer,
       from: uid,
       to: selectedPeer._id,
+      status: 'ringing',
       muted: false,
       cameraOff: callType === 'voice',
       speakerOn: true
@@ -738,7 +771,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const answerCall = async () => {
     if (!callState?.callId || !callState?.offer) return;
     stopIncomingRing();
-    setCallState((current) => (current ? { ...current, incoming: false, preparing: true } : current));
+    // Keep incoming=true during setup so the subscribeIncomingCalls null-handler
+    // doesn't nuke callState when Firebase clears userIncoming.
+    setCallState((current) => (current ? { ...current, preparing: true } : current));
     try {
       const calls = await getCallRuntime();
       const uid = await calls.waitForAuthReady();
@@ -793,6 +828,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       unsubscribe = calls.subscribeIncomingCalls(uid, (incoming) => {
         if (!incoming) {
           const current = callStateRef.current;
+          // Only clear if still genuinely ringing (not answered/preparing)
           if (current?.incoming && !current?.preparing) {
             stopIncomingRing();
             setActiveCallId(null);
@@ -825,6 +861,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           from: incoming.from,
           to: incoming.to,
           offer: incoming.offer || null,
+          status: incoming.status || 'ringing',
           muted: false,
           cameraOff: (incoming.callType || 'voice') === 'voice',
           speakerOn: true

@@ -18,7 +18,8 @@ export default function CallModal({
   remoteMediaEpoch = 0
 }) {
   const isVideo = state.callType === 'video';
-  const showControls = !state.incoming || state.offer;
+  const showControls = !state.incoming || state.preparing;
+  const showTopBar = !isVideo || state.preparing || state.incoming || state.status === 'ringing';
 
   useLayoutEffect(() => {
     const remote = remoteVideoRef.current;
@@ -65,24 +66,36 @@ export default function CallModal({
             <Avatar name={state.caller?.displayName} image={state.caller?.photoURL} size="xl" />
             <h2 className="text-xl font-black text-white">{state.caller?.displayName || 'Call'}</h2>
             <p className="text-sm text-cyan-200">
-              {state.preparing ? 'Connecting…' : state.incoming ? 'Incoming call' : 'Voice call'}
+              {state.preparing
+                ? 'Connecting…'
+                : state.incoming
+                ? 'Incoming call'
+                : state.status === 'ringing'
+                ? 'Ringing…'
+                : 'Voice call'}
             </p>
             <video ref={remoteVideoRef} autoPlay playsInline className="hidden" />
             <video ref={localVideoRef} autoPlay muted playsInline className="hidden" />
           </div>
         )}
 
-        {!isVideo && (
+        {showTopBar && (
           <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
             <p className="text-center text-sm font-semibold text-cyan-100">
-              {state.preparing ? 'Connecting via secure relay…' : state.incoming ? 'Incoming call' : 'On call'}
+              {state.preparing
+                ? 'Connecting via secure relay…'
+                : state.incoming
+                ? 'Incoming call'
+                : state.status === 'ringing'
+                ? 'Ringing…'
+                : 'On call'}
             </p>
           </div>
         )}
       </div>
 
       <div className="shrink-0 px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-3">
-        {state.incoming && !state.offer && (
+        {state.incoming && !state.preparing && (
           <div className="mb-4 flex justify-center gap-4">
             <button
               type="button"
@@ -94,9 +107,10 @@ export default function CallModal({
             <button
               type="button"
               onClick={onAnswer}
-              className="rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/40"
+              disabled={!state.offer}
+              className="rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Answer
+              {state.offer ? 'Answer' : 'Connecting…'}
             </button>
           </div>
         )}
