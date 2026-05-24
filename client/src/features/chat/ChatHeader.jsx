@@ -22,7 +22,8 @@ function ChatHeader({
   isBlocked,
   onToggleBlock,
   onDownloadTxt,
-  onDownloadJson
+  onDownloadJson,
+  onDeleteGroup
 }) {
   const menuAnchorRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -102,6 +103,7 @@ function ChatHeader({
         onClose={() => setMenuOpen(false)}
         isDirect={chat.type === 'direct'}
         isBlocked={isBlocked}
+        amAdmin={chat.type === 'group' && (chat.createdBy === me?._id || chat.participants?.some((p) => p.user?._id === me?._id && p.role === 'admin'))}
         onSearch={() => {
           setMenuOpen(false);
           onSearchOpen();
@@ -117,6 +119,10 @@ function ChatHeader({
         onDownloadJson={() => {
           setMenuOpen(false);
           onDownloadJson();
+        }}
+        onDeleteGroup={() => {
+          setMenuOpen(false);
+          onDeleteGroup();
         }}
       />
     </header>

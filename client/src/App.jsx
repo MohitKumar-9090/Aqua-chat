@@ -154,6 +154,37 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callState, setCallState] = useState(null);
   const [callMinimized, setCallMinimized] = useState(false);
+  const [deleteConfirmGroupId, setDeleteConfirmGroupId] = useState(null);
+
+  const longPressTimersRef = useRef({});
+
+  const handleDeleteGroup = (chatId) => {
+    setDeleteConfirmGroupId(chatId);
+  };
+
+  const handleChatTouchStart = (chat) => {
+    if (chat.type !== 'group') return;
+    const uid = profile?._id || firebaseUser?.uid;
+    const amAdmin = chat.createdBy === uid || chat.participants?.some((p) => p.user?._id === uid && p.role === 'admin');
+    if (!amAdmin) return;
+
+    if (longPressTimersRef.current[chat._id]) {
+      clearTimeout(longPressTimersRef.current[chat._id]);
+    }
+
+    longPressTimersRef.current[chat._id] = setTimeout(() => {
+      handleDeleteGroup(chat._id);
+      delete longPressTimersRef.current[chat._id];
+    }, 700);
+  };
+
+  const handleChatTouchEnd = (chat) => {
+    if (longPressTimersRef.current[chat._id]) {
+      clearTimeout(longPressTimersRef.current[chat._id]);
+      delete longPressTimersRef.current[chat._id];
+    }
+  };
+
   const [callTimer, setCallTimer] = useState(0);
   const [remoteMediaEpoch, setRemoteMediaEpoch] = useState(0);
   const [activeCallId, setActiveCallId] = useState(null);
@@ -481,16 +512,40 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     };
   }, [profile?._id]);
 
+  const unlockRemoteAudio = () => {
+    const audio = remoteAudioRef.current;
+    if (audio) {
+      const originalSrc = audio.src;
+      const originalSrcObject = audio.srcObject;
+      if (originalSrcObject || originalSrc) return;
+      audio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA';
+      audio.play()
+        .then(() => {
+          audio.pause();
+          audio.src = '';
+          audio.srcObject = null;
+          console.log('[WebRTC] Remote audio element unlocked successfully');
+        })
+        .catch((err) => {
+          console.warn('[WebRTC] Remote audio element unlock failed:', err.message);
+        });
+    }
+  };
+
   useEffect(() => {
     const online = () => setIsOnline(true);
     const offline = () => setIsOnline(false);
-    const unlockAudio = () => unlockCallAudio();
+    const unlockAudio = () => {
+      unlockCallAudio();
+      unlockRemoteAudio();
+    };
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
     document.addEventListener('pointerdown', unlockAudio, { once: true, passive: true });
     document.addEventListener('keydown', unlockAudio, { once: true });
     registerBackgroundSync().catch(() => {});
     unlockCallAudio();
+    unlockRemoteAudio();
     return () => {
       window.removeEventListener('online', online);
       window.removeEventListener('offline', offline);
@@ -786,7 +841,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       const audio = remoteAudioRef.current;
       const video = remoteVideoRef.current;
       if (audio) audio.muted = !speakerOn;
-      if (video) video.muted = !speakerOn;
+      if (video) video.muted = true; // Keep remote video element always muted
       return { ...current, speakerOn };
     });
   };
@@ -815,12 +870,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     if (video) {
       if (video.srcObject !== stream) video.srcObject = stream;
-      video.muted = isGroupCall ? true : (isVideo ? !speakerOn : true);
+      video.muted = true; // Always muted to bypass mobile autoplay blocks
       video.play().catch((e) => console.warn('[WebRTC] remote video play() failed:', e.message));
     }
     if (audio) {
       if (audio.srcObject !== stream) audio.srcObject = stream;
-      audio.muted = isGroupCall ? !speakerOn : (isVideo || !speakerOn);
+      audio.muted = !speakerOn; // Sound played strictly through root-level audio element
       audio.play().catch((e) => console.warn('[WebRTC] remote audio play() failed:', e.message));
     }
     
@@ -1031,7 +1086,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       setTimeout(() => attachRemoteMedia(), 2000),
     ];
     return () => retryTimers.forEach(clearTimeout);
-  }, [remoteMediaEpoch, callState?.active, callState?.incoming, callState?.preparing, callState?.callType]);
+  }, [remoteMediaEpoch, callState?.active, callState?.incoming, callState?.preparing, callState?.callType, callMinimized]);
 
   useEffect(() => {
     if (!callState?.active || !callState?.connectedAt) {
@@ -1055,7 +1110,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       video.srcObject = stream;
       video.play().catch(() => {});
     }
-  }, [callState?.active, callState?.callType]);
+  }, [callState?.active, callState?.callType, callMinimized]);
 
   useEffect(() => {
     if (callState?.active && callState?.incoming) {
@@ -1067,6 +1122,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [callState?.active, callState?.incoming, callState?.callId]);
 
   const startCall = async (callType) => {
+    unlockRemoteAudio();
     const isGroupCall = selectedChat?.type === 'group';
     if (!selectedPeer && !isGroupCall) return;
     if (callState?.active) return;
@@ -1157,6 +1213,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const answerCall = async () => {
     if (!callState?.callId) return;
     if (isAnsweringRef.current) return;
+    unlockRemoteAudio();
     isAnsweringRef.current = true;
     stopIncomingRing();
     setCallMinimized(false);
@@ -1584,6 +1641,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                       setSelectedChat(chat);
                       setChats((current) => current.map((item) => (item._id === chat._id ? { ...item, unreadCount: 0 } : item)));
                     }} 
+                    onMouseDown={() => handleChatTouchStart(chat)}
+                    onMouseUp={() => handleChatTouchEnd(chat)}
+                    onMouseLeave={() => handleChatTouchEnd(chat)}
+                    onTouchStart={() => handleChatTouchStart(chat)}
+                    onTouchEnd={() => handleChatTouchEnd(chat)}
+                    onContextMenu={(e) => {
+                      if (chat.type === 'group') {
+                        const uid = profile?._id || firebaseUser?.uid;
+                        const amAdmin = chat.createdBy === uid || chat.participants?.some((p) => p.user?._id === uid && p.role === 'admin');
+                        if (amAdmin) {
+                          e.preventDefault();
+                        }
+                      }
+                    }}
                     className={`w-full flex items-center gap-3 rounded-2xl p-3 text-left transition duration-200 group ${selectedChat?._id === chat._id ? 'bg-gradient-to-r from-cyan-500/20 to-aqua-300/20 border border-cyan-200/50' : 'hover:bg-aqua-50/60 border border-transparent'}`}
                   >
                     <Avatar
@@ -1676,6 +1747,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   onDeleteForMe={api.deleteMessageForMe}
                   onDeleteForEveryone={api.deleteMessageForEveryone}
                   onBulkDeleteForMe={api.deleteMessagesForMe}
+                  onDeleteGroup={() => handleDeleteGroup(selectedChat._id)}
                 />
               </Suspense>
               {selectedChat.type === 'group' && <GroupStrip chat={selectedChat} me={profile} users={users} onRefresh={refresh} />}
@@ -1827,6 +1899,46 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           />
         </Suspense>
       )}
+      {deleteConfirmGroupId && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm transition-all duration-300 animate-fade-in">
+          <div className="w-full max-w-sm transform rounded-3xl bg-white p-6 shadow-2xl transition-all duration-300 scale-100 border border-slate-100 animate-pop">
+            <h3 className="text-lg font-bold text-slate-900 mb-2">Delete this group permanently?</h3>
+            <p className="text-sm text-slate-500 mb-6 leading-relaxed">
+              This action cannot be undone. All messages, files, and call histories for this group will be deleted for all members.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmGroupId(null)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition active:scale-95"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const id = deleteConfirmGroupId;
+                  setDeleteConfirmGroupId(null);
+                  try {
+                    await api.deleteGroupChat(id);
+                    toastSuccess('Group deleted successfully');
+                    if (selectedChatRef.current?._id === id) {
+                      setSelectedChat(null);
+                    }
+                    setChats((current) => current.filter((c) => c._id !== id));
+                  } catch (error) {
+                    toastError(error.message || 'Could not delete group.');
+                  }
+                }}
+                className="rounded-2xl bg-rose-600 hover:bg-rose-700 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-rose-900/20 transition active:scale-95"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <audio ref={remoteAudioRef} autoPlay playsInline className="sr-only" />
     </main>
   );
 }

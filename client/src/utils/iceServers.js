@@ -1,5 +1,7 @@
 const METERED_BASE_URL =
-  import.meta.env.VITE_METERED_TURN_BASE_URL || 'https://aqua-chat.metered.live/api/v1/turn/credentials';
+  import.meta.env.VITE_METERED_TURN_BASE_URL ||
+  import.meta.env.REACT_APP_METERED_TURN_BASE_URL ||
+  'https://aqua-chat.metered.live/api/v1/turn/credentials';
 
 const FALLBACK_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -13,10 +15,16 @@ let sessionCache = null;
 let inflightRequest = null;
 
 const buildCredentialsUrl = () => {
-  const fullUrl = import.meta.env.VITE_METERED_TURN_CREDENTIALS_URL?.trim();
+  const fullUrl = (
+    import.meta.env.VITE_METERED_TURN_CREDENTIALS_URL ||
+    import.meta.env.REACT_APP_METERED_TURN_CREDENTIALS_URL
+  )?.trim();
   if (fullUrl) return fullUrl;
 
-  const apiKey = import.meta.env.VITE_METERED_TURN_API_KEY?.trim();
+  const apiKey = (
+    import.meta.env.VITE_METERED_TURN_API_KEY ||
+    import.meta.env.REACT_APP_METERED_TURN_API_KEY
+  )?.trim();
   if (!apiKey) return null;
 
   const url = new URL(METERED_BASE_URL);

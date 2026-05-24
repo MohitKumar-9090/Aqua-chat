@@ -722,6 +722,70 @@ export const api = {
     return { chat: await chatDocToObject(await getDoc(doc(firestore, 'chats', chatId))) };
   },
 
+  deleteGroupChat: async (chatId) => {
+    const uid = currentUid();
+    const chatRef = doc(firestore, 'chats', chatId);
+    const chatSnap = await getDoc(chatRef);
+    if (!chatSnap.exists()) {
+      throw new Error('Group not found.');
+    }
+    const chatData = chatSnap.data();
+    if (chatData.type !== 'group') {
+      throw new Error('Only groups can be deleted.');
+    }
+    const isCreator = chatData.createdBy === uid;
+    const isAdmin = chatData.adminIds?.includes(uid);
+    if (!isCreator && !isAdmin) {
+      throw new Error('Only the group creator or admins can delete the group.');
+    }
+
+    // 1. Delete all messages first (subcollection)
+    const messagesQuery = query(collection(firestore, 'chats', chatId, 'messages'));
+    const messagesSnap = await getDocs(messagesQuery);
+    
+    const batchSize = 400;
+    for (let i = 0; i < messagesSnap.docs.length; i += batchSize) {
+      const batch = writeBatch(firestore);
+      const chunk = messagesSnap.docs.slice(i, i + batchSize);
+      chunk.forEach((messageDoc) => {
+        batch.delete(messageDoc.ref);
+      });
+      await batch.commit();
+    }
+
+    // 2. Delete parent chat document
+    await deleteDoc(chatRef);
+
+    // 3. Clean up RTDB call sessions
+    try {
+      const { get, update } = await import('firebase/database');
+      const callsRef = dbRef(realtimeDb, 'calls');
+      const snapshot = await get(callsRef);
+      if (snapshot.exists()) {
+        const callsData = snapshot.val();
+        const updates = {};
+        Object.keys(callsData).forEach((callId) => {
+          if (callId.startsWith(`group_call_${chatId}`)) {
+            updates[`calls/${callId}`] = null;
+            const callData = callsData[callId];
+            if (callData?.participants) {
+              Object.keys(callData.participants).forEach((pId) => {
+                updates[`userIncoming/${pId}/${callId}`] = null;
+              });
+            }
+          }
+        });
+        if (Object.keys(updates).length > 0) {
+          await update(dbRef(realtimeDb), updates);
+        }
+      }
+    } catch (error) {
+      console.warn('[WebRTC] RTDB group call cleanup failed or skipped:', error.message);
+    }
+
+    return { ok: true };
+  },
+
   addMembers: async (chatId, memberIds) => {
     await updateDoc(doc(firestore, 'chats', chatId), { participantIds: arrayUnion(...memberIds), updatedAt: serverTimestamp() });
     return { chat: await chatDocToObject(await getDoc(doc(firestore, 'chats', chatId))) };

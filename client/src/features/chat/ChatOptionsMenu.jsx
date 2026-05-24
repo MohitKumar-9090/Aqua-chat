@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Ban, Download, FileJson, FileText, Search, UserCheck } from 'lucide-react';
+import { Ban, Download, FileJson, FileText, Search, Trash2, UserCheck } from 'lucide-react';
 
 export default function ChatOptionsMenu({
   open,
@@ -7,10 +7,12 @@ export default function ChatOptionsMenu({
   onClose,
   isDirect,
   isBlocked,
+  amAdmin,
   onSearch,
   onToggleBlock,
   onDownloadTxt,
-  onDownloadJson
+  onDownloadJson,
+  onDeleteGroup
 }) {
   const menuRef = useRef(null);
 
@@ -61,6 +63,12 @@ export default function ChatOptionsMenu({
         <FileJson size={18} className="text-cyan-600" />
         Download chat (.json)
       </button>
+      {!isDirect && amAdmin && (
+        <button type="button" className={`${itemClass} text-rose-600 hover:bg-rose-50/50`} onClick={onDeleteGroup}>
+          <Trash2 size={18} className="text-rose-600" />
+          Delete Group
+        </button>
+      )}
     </div>
   );
 }

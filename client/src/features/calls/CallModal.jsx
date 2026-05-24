@@ -73,8 +73,6 @@ export default function CallModal({
   if (isGroupCall && isVideo) {
     return (
       <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
-        <audio ref={remoteAudioRef} autoPlay playsInline className="sr-only" />
-
         {/* Grid of participant videos */}
         <div className="relative min-h-0 flex-1 grid grid-cols-2 gap-1 p-1 sm:gap-2 sm:p-2">
           {/* Remote participants */}
@@ -97,6 +95,7 @@ export default function CallModal({
                   }}
                   autoPlay
                   playsInline
+                  muted
                   className="w-full h-full object-cover"
                 />
                 {state.participantsState?.[participant.uid]?.muted && (
@@ -150,7 +149,7 @@ export default function CallModal({
           ) : (
             /* Fallback to single remote stream */
             <div className="relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border border-white/20 col-span-2">
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
             </div>
           )}
 
@@ -253,12 +252,10 @@ export default function CallModal({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
-      <audio ref={remoteAudioRef} autoPlay playsInline className="sr-only" />
-
       <div className="relative min-h-0 flex-1">
         {isVideo ? (
           <>
-            <video ref={remoteVideoRef} autoPlay playsInline className="absolute inset-0 h-full w-full object-cover" />
+            <video ref={remoteVideoRef} autoPlay playsInline muted className="absolute inset-0 h-full w-full object-cover" />
             <video
               ref={localVideoRef}
               autoPlay
@@ -284,7 +281,7 @@ export default function CallModal({
                 ? `On call • ${callTimeLabel}`
                 : 'Voice call'}
             </p>
-            <video ref={remoteVideoRef} autoPlay playsInline className="hidden" />
+            <video ref={remoteVideoRef} autoPlay playsInline muted className="hidden" />
             <video ref={localVideoRef} autoPlay muted playsInline className="hidden" />
           </div>
         )}
