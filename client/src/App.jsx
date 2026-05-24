@@ -216,6 +216,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const callUnsubscribersRef = useRef([]);
   const participantVideoRefsRef = useRef({});
   const isAnsweringRef = useRef(false);
+  const audioContextRef = useRef(null);
   const hasAutoSelectedChatRef = useRef(false);
   const selectedChatRef = useRef(selectedChat);
   const activeMessagesChatRef = useRef(null);
@@ -439,8 +440,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const unsubscribe = onForegroundMessage((payload) => {
       const notification = payload.notification || {};
       const data = payload.data || {};
-      const title = notification.title || data.title || 'AquaChat';
-      const body = notification.body || data.body || 'You have a new message.';
+      const title = notification.title || data.senderName || data.title || 'AquaChat';
+      const body = notification.body || data.messagePreview || data.body || 'You have a new message.';
       const isCall = data.type === 'call' || data.callType;
       
       if (isCall) {
@@ -452,7 +453,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         body,
         icon: notification.icon || data.icon || '/icon-192.png',
         tag: data.tag || `aquachat-${data.chatId || 'general'}`,
-        url: data.url || '/',
+        url: data.url || (data.chatId ? `/?chat=${data.chatId}` : '/'),
         requireInteraction: isCall,
         vibrate: isCall ? [200, 100, 200, 100, 200] : [200, 100, 200]
       });
@@ -538,6 +539,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const unlockAudio = () => {
       unlockCallAudio();
       unlockRemoteAudio();
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          if (!audioContextRef.current) {
+            audioContextRef.current = new AudioCtx();
+          }
+          if (audioContextRef.current.state === 'suspended') {
+            audioContextRef.current.resume().catch(() => {});
+          }
+        }
+      } catch (e) {
+        console.warn('[WebRTC] User gesture AudioContext unlock failed:', e.message);
+      }
     };
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
@@ -868,25 +882,74 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     const isGroupCall = callStateRef.current?.participants?.length > 1;
 
+    // Resume AudioContext captured during user gesture to unlock mobile audio
+    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume().catch(() => {});
+    }
+
+    const needsSrcObjectUpdate = (el, newStream) => {
+      if (!el.srcObject || el.srcObject !== newStream) return true;
+      const elTrackIds = el.srcObject.getTracks().map(t => t.id).sort().join(',');
+      const newTrackIds = newStream.getTracks().map(t => t.id).sort().join(',');
+      return elTrackIds !== newTrackIds;
+    };
+
     if (video) {
-      if (video.srcObject !== stream) video.srcObject = stream;
+      if (needsSrcObjectUpdate(video, stream)) {
+        video.removeAttribute('src');
+        video.srcObject = stream;
+      }
       video.muted = true; // Always muted to bypass mobile autoplay blocks
-      video.play().catch((e) => console.warn('[WebRTC] remote video play() failed:', e.message));
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
+      const playVideo = () => video.play().catch((e) => console.warn('[WebRTC] remote video play() failed:', e.message));
+      playVideo();
+      // Mobile retry: some browsers need a tick after srcObject assignment
+      setTimeout(playVideo, 100);
     }
     if (audio) {
-      if (audio.srcObject !== stream) audio.srcObject = stream;
+      if (needsSrcObjectUpdate(audio, stream)) {
+        audio.removeAttribute('src');
+        audio.srcObject = stream;
+      }
       audio.muted = !speakerOn; // Sound played strictly through root-level audio element
-      audio.play().catch((e) => console.warn('[WebRTC] remote audio play() failed:', e.message));
+      const playAudio = () => {
+        audio.play().catch((e) => {
+          console.warn('[WebRTC] remote audio play() failed, retrying:', e.message);
+          // Fallback: use AudioContext to pump audio on mobile
+          if (audioContextRef.current && stream.getAudioTracks().length) {
+            try {
+              const ctx = audioContextRef.current;
+              if (ctx.state === 'suspended') ctx.resume();
+              const source = ctx.createMediaStreamSource(stream);
+              source.connect(ctx.destination);
+              console.log('[WebRTC] Audio routed via AudioContext fallback');
+            } catch (ctxErr) {
+              console.warn('[WebRTC] AudioContext fallback also failed:', ctxErr.message);
+            }
+          }
+        });
+      };
+      playAudio();
+      // Mobile retry: some browsers need a tick after srcObject assignment
+      setTimeout(playAudio, 100);
+      setTimeout(playAudio, 500);
     }
     
     // Attach streams to participant video refs for group calls
     if (isGroupCall) {
       Object.entries(remoteStreamsByUidRef.current).forEach(([uid, participantStream]) => {
         const participantVideoRef = participantVideoRefsRef.current[uid];
-        if (participantVideoRef?.current && participantVideoRef.current.srcObject !== participantStream) {
-          participantVideoRef.current.srcObject = participantStream;
-          participantVideoRef.current.muted = true;
-          participantVideoRef.current.play().catch(() => {});
+        if (participantVideoRef?.current) {
+          const pEl = participantVideoRef.current;
+          if (needsSrcObjectUpdate(pEl, participantStream)) {
+            pEl.removeAttribute('src');
+            pEl.srcObject = participantStream;
+          }
+          pEl.muted = true;
+          pEl.setAttribute('playsinline', 'true');
+          pEl.setAttribute('webkit-playsinline', 'true');
+          pEl.play().catch(() => {});
         }
       });
     }
@@ -1018,6 +1081,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       });
       callUnsubscribersRef.current.push(remoteCandidates);
 
+      // Helper: callee performs SDP negotiation once offer is available
+      const negotiateCallee = async (connection, offerSdp) => {
+        if (!offerSdp || !connection || connection.currentRemoteDescription) return;
+        console.log('[WebRTC] Callee negotiating SDP with offer');
+        await connection.setRemoteDescription(new RTCSessionDescription(offerSdp));
+        await connection.flushRemoteIceCandidates();
+        const answer = await connection.createAnswer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: callType === 'video'
+        });
+        await connection.setLocalDescription(answer);
+        await calls.sendCallAnswer(callId, uid, answer, uid);
+      };
+
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room) return;
         const connection = peerConnectionsRef.current.get(remoteUid);
@@ -1026,11 +1103,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
           await connection.flushRemoteIceCandidates();
         }
-        if (!isCaller && connection && room.status === 'ended') {
-          endCall();
-          return;
+        // Callee: handle late-arriving offer (mobile-to-mobile race condition)
+        if (!isCaller && connection && !connection.currentRemoteDescription) {
+          const lateOffer = room.offers?.[uid] || room.offer;
+          if (lateOffer) {
+            console.log('[WebRTC] Callee received late offer via room listener');
+            try {
+              await negotiateCallee(connection, lateOffer);
+            } catch (err) {
+              console.error('[WebRTC] Late offer negotiation failed:', err.message);
+            }
+          }
         }
-        if (isCaller && connection && room.status === 'ended') {
+        if (connection && room.status === 'ended') {
           endCall();
           return;
         }
@@ -1052,14 +1137,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           calls.ringCallee({ callId, from: uid, to: remoteUid, callType, offer })
         ]);
       } else if (remoteOffer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
-        await pc.flushRemoteIceCandidates();
-        const answer = await pc.createAnswer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: callType === 'video'
-        });
-        await pc.setLocalDescription(answer);
-        await calls.sendCallAnswer(callId, uid, answer, uid);
+        // Offer available immediately — negotiate now
+        await negotiateCallee(pc, remoteOffer);
       }
     } finally {
       setCallState((current) => {
@@ -1123,6 +1202,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const startCall = async (callType) => {
     unlockRemoteAudio();
+    // Capture AudioContext within user gesture for reliable mobile audio playback
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioCtx();
+        }
+        if (audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume().catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[WebRTC] AudioContext creation/resume failed:', e.message);
+    }
     const isGroupCall = selectedChat?.type === 'group';
     if (!selectedPeer && !isGroupCall) return;
     if (callState?.active) return;
@@ -1217,15 +1310,34 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     isAnsweringRef.current = true;
     stopIncomingRing();
     setCallMinimized(false);
+    // Capture AudioContext within user gesture for reliable mobile audio playback.
+    // This context stays "running" and can pump audio even after the gesture expires.
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioCtx();
+        }
+        if (audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume().catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[WebRTC] AudioContext creation/resume failed:', e.message);
+    }
     // Pre-unlock audio playback within user gesture context to satisfy autoplay policy
     const audioEl = remoteAudioRef.current;
     if (audioEl) {
       audioEl.muted = false;
-      audioEl.play().then(() => audioEl.pause()).catch(() => {});
+      // Play a tiny silent sound to unlock the element, but don't pause — keep it "playing"
+      if (!audioEl.srcObject) {
+        audioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA';
+      }
+      audioEl.play().catch(() => {});
     }
     const videoEl = remoteVideoRef.current;
     if (videoEl) {
-      videoEl.play().then(() => videoEl.pause()).catch(() => {});
+      videoEl.play().catch(() => {});
     }
     setCallState((current) => (current ? { ...current, preparing: true, incoming: false } : current));
     try {
@@ -1334,6 +1446,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setActiveCallId(null);
     setCallState(null);
     setCallMinimized(false);
+    // Close AudioContext used for mobile audio unlock
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
   };
 
   // Handle notification message clicks dynamically while keeping existing state/call alive
@@ -1938,7 +2055,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           </div>
         </div>
       )}
-      <audio ref={remoteAudioRef} autoPlay playsInline className="sr-only" />
+      <audio
+        ref={remoteAudioRef}
+        autoPlay
+        playsInline
+        style={{
+          position: 'absolute',
+          opacity: 0,
+          width: '1px',
+          height: '1px',
+          pointerEvents: 'none',
+          top: '-10px',
+          left: '-10px'
+        }}
+      />
     </main>
   );
 }

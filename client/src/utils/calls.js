@@ -171,22 +171,42 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
 
   pc.ontrack = (event) => {
     console.log('[WebRTC] ontrack fired — kind:', event.track?.kind, 'readyState:', event.track?.readyState, 'muted:', event.track?.muted);
-    const tracks = [event.track].filter(Boolean);
-    tracks.forEach((track) => {
-      if (!remoteStream.getTracks().some((existing) => existing.id === track.id)) {
-        remoteStream.addTrack(track);
-        console.log('[WebRTC] Added remote track:', track.kind, 'id:', track.id, '— total tracks:', remoteStream.getTracks().length);
+    
+    const incomingStream = event.streams[0] || remoteStream;
+    
+    if (event.track && !incomingStream.getTracks().some((existing) => existing.id === event.track.id)) {
+      incomingStream.addTrack(event.track);
+      console.log('[WebRTC] Added remote track:', event.track.kind, 'id:', event.track.id, '— total tracks:', incomingStream.getTracks().length);
+    }
+
+    const emitRemoteLocal = () => {
+      if (incomingStream.getTracks().length) {
+        onRemoteTrack(incomingStream);
       }
-      track.onunmute = () => {
-        console.log('[WebRTC] Remote track unmuted:', track.kind);
-        scheduleEmit();
+    };
+
+    let emitScheduledLocal = false;
+    const scheduleEmitLocal = () => {
+      if (emitScheduledLocal) return;
+      emitScheduledLocal = true;
+      Promise.resolve().then(() => {
+        emitScheduledLocal = false;
+        emitRemoteLocal();
+      });
+    };
+
+    if (event.track) {
+      event.track.onunmute = () => {
+        console.log('[WebRTC] Remote track unmuted:', event.track.kind);
+        scheduleEmitLocal();
       };
-      track.onended = () => {
-        console.log('[WebRTC] Remote track ended:', track.kind);
-        scheduleEmit();
+      event.track.onended = () => {
+        console.log('[WebRTC] Remote track ended:', event.track.kind);
+        scheduleEmitLocal();
       };
-    });
-    scheduleEmit();
+    }
+    
+    scheduleEmitLocal();
   };
 
   pc.onicecandidate = (event) => {

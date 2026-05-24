@@ -20,9 +20,10 @@ const firebaseConfig = {
   appId: appId || "1:72121838071:web:5ad8d9017d4816ba0926f2"
 };
 
+let messaging = null;
 try {
   firebase.initializeApp(firebaseConfig);
-  const messaging = firebase.messaging();
+  messaging = firebase.messaging();
 } catch (error) {
   console.error('[SW] Firebase messaging initialization failed:', error);
 }
@@ -135,35 +136,35 @@ self.addEventListener('fetch', (event) => {
 });
 
 // 3. FCM Push Notifications
-self.addEventListener('push', (event) => {
-  let data = {};
-  try {
-    data = event.data?.json() || {};
-  } catch (err) {
-    console.warn('[SW] Push payload not JSON, falling back to text:', event.data?.text());
-    data = { body: event.data?.text() || 'You have a new message.' };
-  }
+const handlePushNotification = (payload) => {
+  const data = payload.data || payload || {};
+  const notification = payload.notification || data.notification || {};
+  const fcmOptions = payload.fcmOptions || data.fcmOptions || {};
 
-  const notification = data.notification || {};
-  const fcmOptions = data.fcmOptions || {};
-  
-  const title = notification.title || data.title || 'AquaChat';
-  const body = notification.body || data.body || 'You have a new message.';
+  const title = notification.title || data.senderName || data.title || payload.title || 'AquaChat';
+  const body = notification.body || data.messagePreview || data.body || payload.body || 'You have a new message.';
   const icon = notification.icon || data.icon || '/icon-192.png';
   const image = notification.image || data.image || null;
-  const url = fcmOptions.link || data.url || '/';
   const isCall = data.type === 'call' || data.callType || notification.tag?.includes('call');
-  
+
+  const chatId = data.chatId || '';
+  const receiverId = data.receiverId || '';
+  const callId = data.callId || '';
+  const type = data.type || '';
+
+  // Custom deep-linking path
+  const url = fcmOptions.link || data.url || (chatId ? `/?chat=${chatId}` : '/');
+
   const options = {
     body,
     icon,
     image,
     badge: '/icon-192.png',
-    tag: notification.tag || data.tag || `aquachat-${data.chatId || 'general'}`,
+    tag: notification.tag || data.tag || `aquachat-${chatId || 'general'}`,
     renotify: true,
     vibrate: isCall ? [200, 100, 200, 100, 200] : [200, 100, 200],
     requireInteraction: isCall,
-    data: { url, chatId: data.chatId, callId: data.callId, type: data.type },
+    data: { url, chatId, callId, receiverId, type },
     actions: isCall ? [
       {
         action: 'accept',
@@ -178,8 +179,35 @@ self.addEventListener('push', (event) => {
     ] : []
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  return self.registration.showNotification(title, options);
+};
+
+// Listen to native push events
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  let payload = {};
+  try {
+    payload = event.data.json() || {};
+  } catch (err) {
+    console.warn('[SW] Push payload not JSON, falling back to text:', event.data.text());
+    payload = { body: event.data.text() || 'You have a new message.' };
+  }
+
+  event.waitUntil(handlePushNotification(payload));
 });
+
+// Configure Firebase Background Message Handler for FCM compatibility
+try {
+  if (messaging) {
+    messaging.onBackgroundMessage((payload) => {
+      console.log('[SW] onBackgroundMessage received payload:', payload);
+      return handlePushNotification(payload);
+    });
+  }
+} catch (error) {
+  console.error('[SW] Failed to register onBackgroundMessage:', error);
+}
 
 // 4. Notification Click handler with inline PostMessage to keep WebRTC alive
 self.addEventListener('notificationclick', (event) => {
