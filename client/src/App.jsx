@@ -1109,7 +1109,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       };
 
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
-        if (!room) return;
+        if (!room) {
+          console.log('[Call] Room deleted in roomListener, ending call');
+          endCall();
+          return;
+        }
         const connection = peerConnectionsRef.current.get(remoteUid);
         const remoteAnswer = room.answers?.[remoteUid] || room.answer;
         if (isCaller && connection && remoteAnswer && !connection.currentRemoteDescription && !connection.isSettingRemoteDescription) {
@@ -1550,7 +1554,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       if (cancelled) return;
       unsubscribe = calls.subscribeCallRoom(callState.callId, (room) => {
         if (cancelled) return;
-        if (!room) return;
+        if (!room) {
+          console.log('[Call] Room deleted in admin sync listener, ending call');
+          endCall();
+          return;
+        }
         
         const myUid = auth?.currentUser?.uid || profile?._id;
         

@@ -428,12 +428,16 @@ export const endCallRoom = async (callId, from, to) => {
   const removals = [
     remove(dbRef(realtimeDb, `calls/${callId}`)).catch((e) => logRtdbError('remove', `calls/${callId}`, e))
   ];
-  if (to) {
-    removals.push(remove(dbRef(realtimeDb, `userIncoming/${to}/${callId}`)).catch((e) => logRtdbError('remove', `userIncoming/${to}/${callId}`, e)));
-  }
-  if (from) {
-    removals.push(remove(dbRef(realtimeDb, `userIncoming/${from}/${callId}`)).catch((e) => logRtdbError('remove', `userIncoming/${from}/${callId}`, e)));
-  }
+  const processRecipient = (r) => {
+    if (!r) return;
+    if (Array.isArray(r)) {
+      r.forEach(processRecipient);
+    } else {
+      removals.push(remove(dbRef(realtimeDb, `userIncoming/${r}/${callId}`)).catch((e) => logRtdbError('remove', `userIncoming/${r}/${callId}`, e)));
+    }
+  };
+  processRecipient(to);
+  processRecipient(from);
   await Promise.all(removals);
 };
 
