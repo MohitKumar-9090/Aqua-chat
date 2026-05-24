@@ -123,10 +123,14 @@ export const verifyCallAccess = async (callId, uid) => {
 
 export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   const iceServers = await getIceServers();
+  const hasTurn = iceServers.some((s) => {
+    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+    return urls.some((u) => u.startsWith('turn:') || u.startsWith('turns:'));
+  });
   const pc = new RTCPeerConnection({
     iceServers,
     iceCandidatePoolSize: 10,
-    iceTransportPolicy: 'relay'
+    iceTransportPolicy: 'all'
   });
 
   const pendingRemoteCandidates = [];
@@ -166,13 +170,21 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   };
 
   pc.ontrack = (event) => {
+    console.log('[WebRTC] ontrack fired — kind:', event.track?.kind, 'readyState:', event.track?.readyState, 'muted:', event.track?.muted);
     const tracks = [event.track].filter(Boolean);
     tracks.forEach((track) => {
       if (!remoteStream.getTracks().some((existing) => existing.id === track.id)) {
         remoteStream.addTrack(track);
+        console.log('[WebRTC] Added remote track:', track.kind, 'id:', track.id, '— total tracks:', remoteStream.getTracks().length);
       }
-      track.onunmute = scheduleEmit;
-      track.onended = scheduleEmit;
+      track.onunmute = () => {
+        console.log('[WebRTC] Remote track unmuted:', track.kind);
+        scheduleEmit();
+      };
+      track.onended = () => {
+        console.log('[WebRTC] Remote track ended:', track.kind);
+        scheduleEmit();
+      };
     });
     scheduleEmit();
   };

@@ -793,30 +793,42 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const attachRemoteMedia = () => {
     const stream = remoteStreamRef.current;
-    if (!stream) return;
+    if (!stream) {
+      console.log('[WebRTC] attachRemoteMedia: no remote stream yet');
+      return;
+    }
     const video = remoteVideoRef.current;
     const audio = remoteAudioRef.current;
     const isVideo = callStateRef.current?.callType === 'video';
     const speakerOn = callStateRef.current?.speakerOn !== false;
 
+    console.log('[WebRTC] attachRemoteMedia: stream tracks:', stream.getTracks().map(t => `${t.kind}:${t.readyState}`).join(', '), '| videoRef:', !!video, '| audioRef:', !!audio);
+
+    // If refs are not yet available (Suspense lazy-mount), retry on next frame
+    if (!video && !audio) {
+      console.log('[WebRTC] attachRemoteMedia: refs not ready, scheduling rAF retry');
+      requestAnimationFrame(() => attachRemoteMedia());
+      return;
+    }
+
     if (video) {
       if (video.srcObject !== stream) video.srcObject = stream;
       video.muted = isVideo ? !speakerOn : true;
-      video.play().catch(() => {});
+      video.play().catch((e) => console.warn('[WebRTC] remote video play() failed:', e.message));
     }
     if (audio) {
       if (audio.srcObject !== stream) audio.srcObject = stream;
       audio.muted = isVideo || !speakerOn;
-      audio.play().catch(() => {});
+      audio.play().catch((e) => console.warn('[WebRTC] remote audio play() failed:', e.message));
     }
     
     // Attach streams to participant video refs for group calls
     const isGroupCall = callStateRef.current?.participants?.length > 1;
     if (isGroupCall) {
-      Object.entries(remoteStreamsByUidRef.current).forEach(([uid, stream]) => {
+      Object.entries(remoteStreamsByUidRef.current).forEach(([uid, participantStream]) => {
         const participantVideoRef = participantVideoRefsRef.current[uid];
-        if (participantVideoRef?.current && participantVideoRef.current.srcObject !== stream) {
-          participantVideoRef.current.srcObject = stream;
+        if (participantVideoRef?.current && participantVideoRef.current.srcObject !== participantStream) {
+          participantVideoRef.current.srcObject = participantStream;
           participantVideoRef.current.muted = true;
           participantVideoRef.current.play().catch(() => {});
         }
@@ -1009,10 +1021,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     attachRemoteMedia();
     // Retry to handle Suspense lazy-mount race: CallModal's video refs
     // may not exist in the DOM yet when ontrack fires.
+    // Extended timers to cover slow Suspense resolution and mobile devices.
     const retryTimers = [
       setTimeout(() => attachRemoteMedia(), 50),
       setTimeout(() => attachRemoteMedia(), 200),
       setTimeout(() => attachRemoteMedia(), 500),
+      setTimeout(() => attachRemoteMedia(), 1000),
+      setTimeout(() => attachRemoteMedia(), 2000),
     ];
     return () => retryTimers.forEach(clearTimeout);
   }, [remoteMediaEpoch, callState?.active, callState?.incoming, callState?.preparing, callState?.callType]);
@@ -1144,6 +1159,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     isAnsweringRef.current = true;
     stopIncomingRing();
     setCallMinimized(false);
+    // Pre-unlock audio playback within user gesture context to satisfy autoplay policy
+    const audioEl = remoteAudioRef.current;
+    if (audioEl) {
+      audioEl.muted = false;
+      audioEl.play().then(() => audioEl.pause()).catch(() => {});
+    }
+    const videoEl = remoteVideoRef.current;
+    if (videoEl) {
+      videoEl.play().then(() => videoEl.pause()).catch(() => {});
+    }
     setCallState((current) => (current ? { ...current, preparing: true, incoming: false } : current));
     try {
       const calls = await getCallRuntime();

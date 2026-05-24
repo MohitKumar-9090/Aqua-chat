@@ -9,6 +9,7 @@ const requiredFirebaseEnv = {
 };
 const derivedDatabaseURL = requiredFirebaseEnv.projectId ? `https://${requiredFirebaseEnv.projectId}-default-rtdb.firebaseio.com` : '';
 const derivedStorageBucket = requiredFirebaseEnv.projectId ? `${requiredFirebaseEnv.projectId}.appspot.com` : '';
+const derivedSenderId = requiredFirebaseEnv.appId?.split(':')[1] || '';
 
 const mask = (value = '') => {
   if (!value) return 'missing';
@@ -25,7 +26,7 @@ export const firebaseConfig = {
   appId: requiredFirebaseEnv.appId,
   databaseURL: requiredFirebaseEnv.databaseURL || derivedDatabaseURL,
   storageBucket: requiredFirebaseEnv.storageBucket || derivedStorageBucket,
-  messagingSenderId: requiredFirebaseEnv.messagingSenderId
+  messagingSenderId: requiredFirebaseEnv.messagingSenderId || derivedSenderId
 };
 
 export const validateClientEnv = () => {
