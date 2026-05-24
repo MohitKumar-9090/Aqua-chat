@@ -1085,8 +1085,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       const negotiateCallee = async (connection, offerSdp) => {
         if (!offerSdp || !connection) return;
         // Avoid duplicate concurrent negotiations
-        if (connection.isNegotiating || connection.signalingState === 'stable' || connection.signalingState === 'closed' || connection.currentRemoteDescription) {
-          console.log('[WebRTC] Callee negotiation skipped: already negotiating or stable/closed');
+        if (connection.isNegotiating || connection.currentRemoteDescription) {
+          console.log('[WebRTC] Callee negotiation skipped: already negotiating or remote description exists');
           return;
         }
         connection.isNegotiating = true;
@@ -1098,11 +1098,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             offerToReceiveAudio: true,
             offerToReceiveVideo: callType === 'video'
           });
-          // Ensure we are still in have-remote-offer state before setting local answer
-          if (connection.signalingState !== 'have-remote-offer') {
-            console.warn('[WebRTC] Callee signaling state changed, skipping setLocalDescription:', connection.signalingState);
-            return;
-          }
           await connection.setLocalDescription(answer);
           await calls.sendCallAnswer(callId, uid, answer, uid);
         } catch (err) {
