@@ -786,7 +786,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       const audio = remoteAudioRef.current;
       const video = remoteVideoRef.current;
       if (audio) audio.muted = !speakerOn;
-      if (video) video.muted = true;
+      if (video) video.muted = !speakerOn;
       return { ...current, speakerOn };
     });
   };
@@ -796,16 +796,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (!stream) return;
     const video = remoteVideoRef.current;
     const audio = remoteAudioRef.current;
+    const isVideo = callStateRef.current?.callType === 'video';
     const speakerOn = callStateRef.current?.speakerOn !== false;
 
     if (video) {
       if (video.srcObject !== stream) video.srcObject = stream;
-      video.muted = true;
+      video.muted = isVideo ? !speakerOn : true;
       video.play().catch(() => {});
     }
     if (audio) {
       if (audio.srcObject !== stream) audio.srcObject = stream;
-      audio.muted = !speakerOn;
+      audio.muted = isVideo || !speakerOn;
       audio.play().catch(() => {});
     }
     
@@ -1014,7 +1015,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       setTimeout(() => attachRemoteMedia(), 500),
     ];
     return () => retryTimers.forEach(clearTimeout);
-  }, [remoteMediaEpoch]);
+  }, [remoteMediaEpoch, callState?.active, callState?.incoming, callState?.preparing, callState?.callType]);
 
   useEffect(() => {
     if (!callState?.active || !callState?.connectedAt) {
