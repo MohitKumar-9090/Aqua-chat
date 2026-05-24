@@ -53,3 +53,12 @@ export function statusText(user) {
   if (user?.isOnline || user?.online) return 'online';
   return formatLastSeen(user?.lastSeen);
 }
+
+export function maskEmail(email) {
+  if (!email || !email.includes('@')) return email;
+  const [localPart, domain] = email.split('@');
+  if (localPart.length <= 3) {
+    return `${localPart[0] || ''}****@${domain}`;
+  }
+  return `${localPart.slice(0, 3)}****@${domain}`;
+}

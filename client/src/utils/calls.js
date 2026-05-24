@@ -416,3 +416,9 @@ export const endCallRoom = async (callId, from, to) => {
   }
   await Promise.all(removals);
 };
+
+export const updateParticipantCallState = async (callId, targetUid, state) => {
+  const path = `calls/${callId}/participantsState/${targetUid}`;
+  await rtdbUpdate(path, state, 'updateParticipantCallState');
+};
+

@@ -811,19 +811,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       return;
     }
 
+    const isGroupCall = callStateRef.current?.participants?.length > 1;
+
     if (video) {
       if (video.srcObject !== stream) video.srcObject = stream;
-      video.muted = isVideo ? !speakerOn : true;
+      video.muted = isGroupCall ? true : (isVideo ? !speakerOn : true);
       video.play().catch((e) => console.warn('[WebRTC] remote video play() failed:', e.message));
     }
     if (audio) {
       if (audio.srcObject !== stream) audio.srcObject = stream;
-      audio.muted = isVideo || !speakerOn;
+      audio.muted = isGroupCall ? !speakerOn : (isVideo || !speakerOn);
       audio.play().catch((e) => console.warn('[WebRTC] remote audio play() failed:', e.message));
     }
     
     // Attach streams to participant video refs for group calls
-    const isGroupCall = callStateRef.current?.participants?.length > 1;
     if (isGroupCall) {
       Object.entries(remoteStreamsByUidRef.current).forEach(([uid, participantStream]) => {
         const participantVideoRef = participantVideoRefsRef.current[uid];
@@ -1278,6 +1279,126 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setCallMinimized(false);
   };
 
+  // Handle notification message clicks dynamically while keeping existing state/call alive
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return undefined;
+
+    const handleSWMessage = (event) => {
+      if (event.data?.type === 'NOTIFICATION_CLICK') {
+        const { chatId, callId, action } = event.data;
+        if (chatId) {
+          const chat = chats.find((item) => item._id === chatId);
+          if (chat) {
+            setSelectedChat(chat);
+            setPanel('chats');
+          }
+        }
+        if (action === 'accept') {
+          answerCall();
+        } else if (action === 'reject') {
+          endCall();
+        }
+      }
+    };
+
+    navigator.serviceWorker.addEventListener('message', handleSWMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+    };
+  }, [chats, answerCall, endCall]);
+
+  // Handle incoming call action from URL query params when app is loaded fresh
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const action = params.get('action');
+    if (action === 'accept' && callState?.incoming && callState?.active) {
+      answerCall();
+      const url = new URL(window.location);
+      url.searchParams.delete('action');
+      window.history.replaceState({}, '', url);
+    } else if (action === 'reject' && callState?.incoming && callState?.active) {
+      endCall();
+      const url = new URL(window.location);
+      url.searchParams.delete('action');
+      window.history.replaceState({}, '', url);
+    }
+  }, [callState?.incoming, callState?.active, answerCall, endCall]);
+
+  const handleAdminControl = async (targetUid, actionType) => {
+    if (!callState?.callId) return;
+    try {
+      const calls = await getCallRuntime();
+      if (actionType === 'mute') {
+        const isCurrentlyMuted = callState.participantsState?.[targetUid]?.muted;
+        await calls.updateParticipantCallState(callState.callId, targetUid, {
+          muted: !isCurrentlyMuted
+        });
+        toastSuccess(!isCurrentlyMuted ? 'Participant muted' : 'Participant unmuted');
+      } else if (actionType === 'remove') {
+        await calls.updateParticipantCallState(callState.callId, targetUid, {
+          removed: true
+        });
+        toastSuccess('Participant removed from call');
+      }
+    } catch (error) {
+      toastError(error.message || 'Action failed.');
+    }
+  };
+
+  // Subscribe to call room state for admin controls and participant state sync
+  useEffect(() => {
+    if (!callState?.active || !callState?.callId) return undefined;
+
+    let cancelled = false;
+    let unsubscribe = () => {};
+
+    getCallRuntime().then((calls) => {
+      if (cancelled) return;
+      unsubscribe = calls.subscribeCallRoom(callState.callId, (room) => {
+        if (cancelled) return;
+        if (!room) return;
+        
+        const myUid = auth?.currentUser?.uid || profile?._id;
+        
+        // 1. Check if we have been removed by admin
+        if (room.participantsState?.[myUid]?.removed) {
+          console.warn('[Call] Removed from call by admin.');
+          endCall();
+          return;
+        }
+
+        // 2. Sync participantsState and call creator in callState
+        setCallState((current) => {
+          if (!current) return null;
+          return {
+            ...current,
+            creator: room.from,
+            participantsState: room.participantsState || {}
+          };
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [callState?.active, callState?.callId, profile?._id]);
+
+  // Dynamically apply admin mute states to WebRTC tracks on the receiving side
+  useEffect(() => {
+    if (!callState?.active || !callState?.participantsState) return;
+    
+    Object.entries(callState.participantsState).forEach(([uid, state]) => {
+      const stream = remoteStreamsByUidRef.current[uid];
+      if (stream) {
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = !state.muted;
+        });
+      }
+    });
+  }, [callState?.participantsState, callState?.active]);
+
   useEffect(() => {
     const uid = auth?.currentUser?.uid || profile?._id;
     if (!uid) return undefined;
@@ -1672,6 +1793,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             remoteMediaEpoch={remoteMediaEpoch}
             callTimer={callTimer}
             remoteParticipants={remoteParticipants}
+            currentUid={profile?._id || firebaseUser?.uid}
+            onAdminControl={handleAdminControl}
           />
         </Suspense>
       )}

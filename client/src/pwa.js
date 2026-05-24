@@ -1,5 +1,6 @@
 import { getApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
+import { firebaseConfig } from './config/env.js';
 
 const isProd = import.meta.env.PROD;
 
@@ -67,8 +68,20 @@ export const registerServiceWorker = () => {
   }
 
   if (!swRegistrationPromise) {
+    const params = new URLSearchParams();
+    if (firebaseConfig) {
+      if (firebaseConfig.apiKey) params.append('apiKey', firebaseConfig.apiKey);
+      if (firebaseConfig.authDomain) params.append('authDomain', firebaseConfig.authDomain);
+      if (firebaseConfig.projectId) params.append('projectId', firebaseConfig.projectId);
+      if (firebaseConfig.storageBucket) params.append('storageBucket', firebaseConfig.storageBucket);
+      if (firebaseConfig.messagingSenderId) params.append('messagingSenderId', firebaseConfig.messagingSenderId);
+      if (firebaseConfig.appId) params.append('appId', firebaseConfig.appId);
+    }
+    const queryString = params.toString();
+    const swUrl = queryString ? `/firebase-messaging-sw.js?${queryString}` : '/firebase-messaging-sw.js';
+
     swRegistrationPromise = navigator.serviceWorker
-      .register('/firebase-messaging-sw.js', { scope: '/', updateViaCache: 'none' })
+      .register(swUrl, { scope: '/', updateViaCache: 'none' })
       .then((registration) => {
         registration.update().catch(() => {});
         return registration;

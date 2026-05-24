@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume2, VolumeX } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 
@@ -18,10 +18,14 @@ export default function CallModal({
   onMinimize,
   remoteMediaEpoch = 0,
   callTimer = 0,
-  remoteParticipants = []
+  remoteParticipants = [],
+  currentUid = '',
+  onAdminControl = () => {}
 }) {
   const isVideo = state.callType === 'video';
   const isGroupCall = state.participants && state.participants.length > 1;
+  const isAdmin = state.creator === currentUid;
+  const [activeMenuUid, setActiveMenuUid] = useState(null);
   const showControls = !state.incoming || state.preparing;
   const showTopBar = !isVideo || state.preparing || state.incoming || state.status === 'ringing' || state.connectedAt;
   
@@ -78,7 +82,14 @@ export default function CallModal({
             remoteParticipants.map((participant, idx) => (
               <div
                 key={participant.uid || idx}
-                className="relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border border-white/20"
+                onClick={() => {
+                  if (isAdmin) {
+                    setActiveMenuUid(activeMenuUid === participant.uid ? null : participant.uid);
+                  }
+                }}
+                className={`relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border transition ${
+                  isAdmin ? 'cursor-pointer hover:border-cyan-500/50' : 'border-white/20'
+                }`}
               >
                 <video
                   ref={(el) => {
@@ -88,9 +99,52 @@ export default function CallModal({
                   playsInline
                   className="w-full h-full object-cover"
                 />
+                {state.participantsState?.[participant.uid]?.muted && (
+                  <div className="absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/80 text-white shadow">
+                    <MicOff size={14} />
+                  </div>
+                )}
                 <div className="absolute bottom-2 left-2 px-2 py-1 bg-black/50 rounded text-white text-xs font-medium">
                   {participant.name || 'Participant'}
                 </div>
+                {isAdmin && activeMenuUid === participant.uid && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm transition duration-200">
+                    <div className="flex flex-col gap-2 rounded-2xl bg-slate-900/90 p-3 border border-white/10 shadow-2xl min-w-[140px]">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAdminControl(participant.uid, 'mute');
+                          setActiveMenuUid(null);
+                        }}
+                        className="flex items-center justify-center gap-2 px-4 py-2.5 hover:bg-white/10 rounded-xl text-white text-xs font-bold transition animate-fade-in"
+                      >
+                        {state.participantsState?.[participant.uid]?.muted ? 'Unmute' : 'Mute'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAdminControl(participant.uid, 'remove');
+                          setActiveMenuUid(null);
+                        }}
+                        className="flex items-center justify-center gap-2 px-4 py-2.5 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 rounded-xl text-xs font-bold transition animate-fade-in"
+                      >
+                        Remove
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMenuUid(null);
+                        }}
+                        className="px-4 py-1.5 hover:bg-white/5 text-slate-400 rounded-xl text-[10px] transition"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))
           ) : (
