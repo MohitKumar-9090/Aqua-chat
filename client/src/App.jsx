@@ -783,11 +783,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setCallState((current) => {
       if (!current) return current;
       const speakerOn = !current.speakerOn;
-      const isVideo = current.callType === 'video';
       const audio = remoteAudioRef.current;
       const video = remoteVideoRef.current;
-      if (audio) audio.muted = isVideo || !speakerOn;
-      if (video) video.muted = !isVideo || !speakerOn;
+      if (audio) audio.muted = !speakerOn;
+      if (video) video.muted = true;
       return { ...current, speakerOn };
     });
   };
@@ -797,17 +796,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (!stream) return;
     const video = remoteVideoRef.current;
     const audio = remoteAudioRef.current;
-    const isVideo = callStateRef.current?.callType === 'video';
     const speakerOn = callStateRef.current?.speakerOn !== false;
 
-    if (video && video.srcObject !== stream) {
-      video.srcObject = stream;
-      video.muted = !isVideo || !speakerOn;
+    if (video) {
+      if (video.srcObject !== stream) video.srcObject = stream;
+      video.muted = true;
       video.play().catch(() => {});
     }
-    if (audio && audio.srcObject !== stream) {
-      audio.srcObject = stream;
-      audio.muted = isVideo || !speakerOn;
+    if (audio) {
+      if (audio.srcObject !== stream) audio.srcObject = stream;
+      audio.muted = !speakerOn;
       audio.play().catch(() => {});
     }
     
@@ -818,6 +816,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const participantVideoRef = participantVideoRefsRef.current[uid];
         if (participantVideoRef?.current && participantVideoRef.current.srcObject !== stream) {
           participantVideoRef.current.srcObject = stream;
+          participantVideoRef.current.muted = true;
           participantVideoRef.current.play().catch(() => {});
         }
       });
@@ -870,6 +869,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (participantVideoRef?.current && remoteStream) {
       if (participantVideoRef.current.srcObject !== remoteStream) {
         participantVideoRef.current.srcObject = remoteStream;
+        participantVideoRef.current.muted = true;
         participantVideoRef.current.play().catch(() => {});
       }
     }
@@ -952,8 +952,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room) return;
         const connection = peerConnectionsRef.current.get(remoteUid);
-        if (isCaller && connection && room.answers?.[remoteUid] && !connection.currentRemoteDescription) {
-          await connection.setRemoteDescription(new RTCSessionDescription(room.answers[remoteUid]));
+        const remoteAnswer = room.answers?.[remoteUid] || room.answer;
+        if (isCaller && connection && remoteAnswer && !connection.currentRemoteDescription) {
+          await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
           await connection.flushRemoteIceCandidates();
         }
         if (!isCaller && connection && room.status === 'ended') {
@@ -989,7 +990,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           offerToReceiveVideo: callType === 'video'
         });
         await pc.setLocalDescription(answer);
-        await calls.sendCallAnswer(callId, uid, answer, remoteUid);
+        await calls.sendCallAnswer(callId, uid, answer, uid);
       }
     } finally {
       setCallState((current) => {

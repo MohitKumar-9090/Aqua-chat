@@ -1054,7 +1054,9 @@ export const api = {
     const uid = currentUid();
     if (userId === uid) throw new Error('You cannot disconnect from yourself.');
     await updateDoc(doc(firestore, 'users', uid), { connections: arrayRemove(userId) });
-    await updateDoc(doc(firestore, 'users', userId), { connections: arrayRemove(uid) });
+    await updateDoc(doc(firestore, 'users', userId), { connections: arrayRemove(uid) }).catch((error) => {
+      if (error?.code !== 'permission-denied') throw error;
+    });
     return { status: 'disconnected' };
   },
   subscribeConnectionRequests: (uid, handler) => {
