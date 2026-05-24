@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { FileText, Mic, Paperclip, Send, Smile, X } from 'lucide-react';
 import { setTyping as setFirebaseTyping } from '../../api.js';
 import { detectMessageType, prepareUploadFile } from '../../utils/messageMedia.js';
+import { error as toastError } from '../../utils/toast.js';
 
 const emptyRecorder = { recording: false, stream: null, mediaRecorder: null, chunks: [] };
 
@@ -59,6 +60,9 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
     setUploadProgress(0);
     try {
       await uploadWithRetry(file);
+    } catch (err) {
+      console.error('[Upload] Media upload failed:', err);
+      toastError(err.message || 'Media upload failed. Please try again.');
     } finally {
       setUploading(false);
       setUploadProgress(0);

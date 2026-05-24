@@ -1083,28 +1083,53 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
       // Helper: callee performs SDP negotiation once offer is available
       const negotiateCallee = async (connection, offerSdp) => {
-        if (!offerSdp || !connection || connection.currentRemoteDescription) return;
-        console.log('[WebRTC] Callee negotiating SDP with offer');
-        await connection.setRemoteDescription(new RTCSessionDescription(offerSdp));
-        await connection.flushRemoteIceCandidates();
-        const answer = await connection.createAnswer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: callType === 'video'
-        });
-        await connection.setLocalDescription(answer);
-        await calls.sendCallAnswer(callId, uid, answer, uid);
+        if (!offerSdp || !connection) return;
+        // Avoid duplicate concurrent negotiations
+        if (connection.isNegotiating || connection.signalingState === 'stable' || connection.signalingState === 'closed' || connection.currentRemoteDescription) {
+          console.log('[WebRTC] Callee negotiation skipped: already negotiating or stable/closed');
+          return;
+        }
+        connection.isNegotiating = true;
+        try {
+          console.log('[WebRTC] Callee negotiating SDP with offer');
+          await connection.setRemoteDescription(new RTCSessionDescription(offerSdp));
+          await connection.flushRemoteIceCandidates();
+          const answer = await connection.createAnswer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: callType === 'video'
+          });
+          // Ensure we are still in have-remote-offer state before setting local answer
+          if (connection.signalingState !== 'have-remote-offer') {
+            console.warn('[WebRTC] Callee signaling state changed, skipping setLocalDescription:', connection.signalingState);
+            return;
+          }
+          await connection.setLocalDescription(answer);
+          await calls.sendCallAnswer(callId, uid, answer, uid);
+        } catch (err) {
+          console.error('[WebRTC] Callee negotiation failed:', err.message);
+          throw err;
+        } finally {
+          connection.isNegotiating = false;
+        }
       };
 
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room) return;
         const connection = peerConnectionsRef.current.get(remoteUid);
         const remoteAnswer = room.answers?.[remoteUid] || room.answer;
-        if (isCaller && connection && remoteAnswer && !connection.currentRemoteDescription) {
-          await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
-          await connection.flushRemoteIceCandidates();
+        if (isCaller && connection && remoteAnswer && !connection.currentRemoteDescription && !connection.isSettingRemoteDescription) {
+          connection.isSettingRemoteDescription = true;
+          try {
+            await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
+            await connection.flushRemoteIceCandidates();
+          } catch (err) {
+            console.error('[WebRTC] Caller setRemoteDescription failed:', err.message);
+          } finally {
+            connection.isSettingRemoteDescription = false;
+          }
         }
         // Callee: handle late-arriving offer (mobile-to-mobile race condition)
-        if (!isCaller && connection && !connection.currentRemoteDescription) {
+        if (!isCaller && connection && !connection.currentRemoteDescription && !connection.isNegotiating) {
           const lateOffer = room.offers?.[uid] || room.offer;
           if (lateOffer) {
             console.log('[WebRTC] Callee received late offer via room listener');

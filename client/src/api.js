@@ -19,7 +19,7 @@ import {
   where,
   writeBatch
 } from 'firebase/firestore';
-import { getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage';
+import { getDownloadURL, ref as storageRef, uploadBytes, uploadBytesResumable } from 'firebase/storage';
 import { compressProfilePhoto, prepareUploadFile } from './utils/messageMedia.js';
 import { pruneStatusViewedLocal } from './utils/statusViewed.js';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -94,6 +94,39 @@ const readUserCached = async (uid) => {
 };
 
 const uploadFileWithTimeout = async (ref, file, { onProgress, timeoutMs = 45000 } = {}) => {
+  const isSmallFile = file.size < 2 * 1024 * 1024; // 2MB
+
+  // For small files, use the faster, single-request uploadBytes (no resumable session overhead)
+  if (isSmallFile) {
+    let mockInterval;
+    if (onProgress) {
+      onProgress(10);
+      let progress = 10;
+      mockInterval = setInterval(() => {
+        progress = Math.min(90, progress + 15);
+        onProgress(progress);
+      }, 150);
+    }
+
+    try {
+      const uploadPromise = uploadBytes(ref, file, { contentType: file.type || 'application/octet-stream' });
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Upload timed out. Check your internet connection and Firebase Storage rules.')), timeoutMs);
+      });
+      await Promise.race([uploadPromise, timeoutPromise]);
+      if (onProgress) onProgress(100);
+    } catch (error) {
+      if (error?.code === 'storage/unauthorized') {
+        throw new Error('Upload is blocked by Firebase Storage permissions. Deploy storage rules and try again.');
+      }
+      throw error;
+    } finally {
+      if (mockInterval) clearInterval(mockInterval);
+    }
+    return;
+  }
+
+  // For larger files, use uploadBytesResumable but throttle the progress callback
   const task = uploadBytesResumable(ref, file, { contentType: file.type || 'application/octet-stream' });
 
   try {
@@ -103,11 +136,17 @@ const uploadFileWithTimeout = async (ref, file, { onProgress, timeoutMs = 45000 
         reject(new Error('Upload timed out. Check your internet connection and Firebase Storage rules.'));
       }, timeoutMs);
 
+      let lastProgress = 0;
       task.on(
         'state_changed',
         (snapshot) => {
           if (onProgress && snapshot.totalBytes) {
-            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+            const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+            // Throttle progress updates to prevent choking the main rendering thread
+            if (progress === 100 || progress - lastProgress >= 8) {
+              lastProgress = progress;
+              onProgress(progress);
+            }
           }
         },
         (error) => {
@@ -125,7 +164,7 @@ const uploadFileWithTimeout = async (ref, file, { onProgress, timeoutMs = 45000 
       throw new Error('Upload timed out. Check your internet connection and Firebase Storage rules.');
     }
     if (error?.code === 'storage/unauthorized') {
-      throw new Error('Profile photo upload is blocked by Firebase Storage permissions. Deploy storage rules and try again.');
+      throw new Error('Upload is blocked by Firebase Storage permissions. Deploy storage rules and try again.');
     }
     throw error;
   }
