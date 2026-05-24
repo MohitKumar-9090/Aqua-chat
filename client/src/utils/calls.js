@@ -166,14 +166,13 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   };
 
   pc.ontrack = (event) => {
-    const stream = event.streams?.[0];
-    if (stream?.getTracks?.().length) {
-      stream.getTracks().forEach((track) => {
-        if (!remoteStream.getTracks().some((t) => t.id === track.id)) remoteStream.addTrack(track);
-      });
-    } else if (event.track && !remoteStream.getTracks().some((track) => track.id === event.track.id)) {
-      remoteStream.addTrack(event.track);
-    }
+    const tracks = event.streams?.[0]?.getTracks?.()?.length ? event.streams[0].getTracks() : [event.track].filter(Boolean);
+    tracks.forEach((track) => {
+      if (!remoteStream.getTracks().some((existing) => existing.id === track.id)) {
+        remoteStream.addTrack(track);
+      }
+      track.onunmute = scheduleEmit;
+    });
     scheduleEmit();
   };
 

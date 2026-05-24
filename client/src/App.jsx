@@ -895,7 +895,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       });
     }
     
-    remoteStreamRef.current = getCombinedRemoteStream();
+    remoteStreamRef.current = isGroupCall ? getCombinedRemoteStream() : remoteStream;
     setRemoteMediaEpoch((n) => n + 1);
     markCallConnected();
   };
