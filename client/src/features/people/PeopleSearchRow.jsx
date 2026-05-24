@@ -16,13 +16,18 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
           : 'Connect';
   const connectionIcon = user.connectionStatus === 'connected' ? UserCheck : UserPlus;
   const ConnectionIcon = connectionIcon;
+  const canMessage = user.connectionStatus === 'connected';
   const canConnect = user.connectionStatus !== 'connected' && user.connectionStatus !== 'requested';
   const preview = user.lastMessagePreview || user.phoneNumber || user.bio || statusText(user);
+
+  const handleMessage = () => {
+    if (canMessage) onMessage(user._id);
+  };
 
   const handleConnect = () => {
     if (connecting) return;
     if (user.connectionStatus === 'incoming') return onAccept(user);
-    if (user.connectionStatus === 'connected') return onMessage(user._id);
+    if (canMessage) return handleMessage();
     if (canConnect) return onConnect(user);
   };
 
@@ -30,9 +35,9 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
     <div
       role="button"
       tabIndex={0}
-      onClick={() => onMessage(user._id)}
+      onClick={handleConnect}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') onMessage(user._id);
+        if (event.key === 'Enter' || event.key === ' ') handleConnect();
       }}
       className="w-full cursor-pointer rounded-2xl border border-transparent p-3 text-left transition duration-200 hover:border-blush-100/50 hover:bg-blush-50/60"
     >
@@ -78,7 +83,7 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
                 Disconnect
               </button>
             )}
-            <button type="button" onClick={(event) => { event.stopPropagation(); onMessage(user._id); }} disabled={!user.connectionStatus === 'connected'} className="inline-flex items-center gap-1.5 rounded-xl bg-aqua-50 px-3 py-1.5 text-xs font-black text-cyan-800 transition hover:bg-aqua-100 disabled:opacity-50 disabled:cursor-not-allowed">
+            <button type="button" onClick={(event) => { event.stopPropagation(); handleMessage(); }} disabled={!canMessage} className="inline-flex items-center gap-1.5 rounded-xl bg-aqua-50 px-3 py-1.5 text-xs font-black text-cyan-800 transition hover:bg-aqua-100 disabled:opacity-50 disabled:cursor-not-allowed">
               <MessageCircle size={14} />
               Message
             </button>

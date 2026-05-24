@@ -93,6 +93,44 @@ const readUserCached = async (uid) => {
   return user;
 };
 
+const uploadFileWithTimeout = async (ref, file, { onProgress, timeoutMs = 45000 } = {}) => {
+  const task = uploadBytesResumable(ref, file, { contentType: file.type || 'application/octet-stream' });
+
+  try {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        task.cancel();
+        reject(new Error('Upload timed out. Check your internet connection and Firebase Storage rules.'));
+      }, timeoutMs);
+
+      task.on(
+        'state_changed',
+        (snapshot) => {
+          if (onProgress && snapshot.totalBytes) {
+            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+          }
+        },
+        (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+        () => {
+          clearTimeout(timeout);
+          resolve();
+        }
+      );
+    });
+  } catch (error) {
+    if (error?.code === 'storage/canceled') {
+      throw new Error('Upload timed out. Check your internet connection and Firebase Storage rules.');
+    }
+    if (error?.code === 'storage/unauthorized') {
+      throw new Error('Profile photo upload is blocked by Firebase Storage permissions. Deploy storage rules and try again.');
+    }
+    throw error;
+  }
+};
+
 export const primeUserCache = (user) => {
   if (user?._id) userCache.set(user._id, user);
 };
@@ -533,6 +571,30 @@ const assertContactAllowed = async (transaction, uid, otherUids) => {
   }
 };
 
+const assertConnected = async (transaction, uid, otherUids) => {
+  const mySnap = await transaction.get(doc(firestore, 'users', uid));
+  const myConnections = mySnap.data()?.connections || [];
+  for (const otherUid of otherUids) {
+    const otherSnap = await transaction.get(doc(firestore, 'users', otherUid));
+    const otherConnections = otherSnap.data()?.connections || [];
+    if (!myConnections.includes(otherUid) && !otherConnections.includes(uid)) {
+      throw new Error('Connect with this user to send messages.');
+    }
+  }
+};
+
+const assertUsersConnected = async (uid, otherUid) => {
+  const [mySnap, otherSnap] = await Promise.all([
+    getDoc(doc(firestore, 'users', uid)),
+    getDoc(doc(firestore, 'users', otherUid))
+  ]);
+  const myConnections = mySnap.data()?.connections || [];
+  const otherConnections = otherSnap.data()?.connections || [];
+  if (!myConnections.includes(otherUid) && !otherConnections.includes(uid)) {
+    throw new Error('Connect with this user first.');
+  }
+};
+
 export const api = {
   sync: async (body = {}) => {
     const user = auth.currentUser;
@@ -598,9 +660,10 @@ export const api = {
       snaps = (await getDocs(q)).docs;
     }
 
-    const [mySnap, chatsSnap, allDocsSource] = await Promise.all([
+    const [mySnap, incomingRequestsSnap, sentRequestsSnap, allDocsSource] = await Promise.all([
       getDoc(doc(firestore, 'users', uid)),
-      getDocs(query(collection(firestore, 'chats'), where('participantIds', 'array-contains', uid))),
+      getDocs(query(collection(firestore, 'connectionRequests'), where('receiverId', '==', uid), where('status', '==', 'pending'))),
+      getDocs(query(collection(firestore, 'connectionRequests'), where('senderId', '==', uid), where('status', '==', 'pending'))),
       clean && snaps.length < 10 ? getDocs(query(collection(firestore, 'users'), limit(60))) : Promise.resolve(null)
     ]);
 
@@ -608,18 +671,24 @@ export const api = {
     const totalSnap = await getDocs(query(collection(firestore, 'users'), limit(60)));
     const totalUsers = totalSnap.docs.filter((snap) => snap.id !== uid).length;
     const connectedIds = new Set(mySnap.data()?.connections || []);
-    chatsSnap.docs.forEach((chatDoc) => {
-      (chatDoc.data().participantIds || []).filter((id) => id !== uid).forEach((id) => connectedIds.add(id));
-    });
+    const incomingIds = new Set(incomingRequestsSnap.docs.map((docSnap) => docSnap.data().senderId));
+    const requestedIds = new Set(sentRequestsSnap.docs.map((docSnap) => docSnap.data().receiverId));
 
     const seen = new Set();
     const users = allDocs
       .filter((snap) => snap.id !== uid)
       .map((snap) => {
         const user = presentUser(snap.id, snap.data());
+        const connectionStatus = connectedIds.has(user._id)
+          ? 'connected'
+          : incomingIds.has(user._id)
+            ? 'incoming'
+            : requestedIds.has(user._id)
+              ? 'requested'
+              : user.connectionStatus;
         return {
           ...user,
-          connectionStatus: connectedIds.has(user._id) ? 'connected' : user.connectionStatus
+          connectionStatus
         };
       })
       .filter((user) => {
@@ -642,6 +711,8 @@ export const api = {
 
   createDirectChat: async (userId) => {
     const uid = currentUid();
+    if (userId === uid) throw new Error('You cannot message yourself.');
+    await assertUsersConnected(uid, userId);
     const chatId = directChatId(uid, userId);
     const ref = doc(firestore, 'chats', chatId);
     await setDoc(ref, {
@@ -728,7 +799,11 @@ export const api = {
       if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
         throw new Error('Chat not found or you are not a participant.');
       }
-      const others = (chatSnap.data().participantIds || []).filter((id) => id !== uid);
+      const chatData = chatSnap.data();
+      const others = (chatData.participantIds || []).filter((id) => id !== uid);
+      if (chatData.type === 'direct') {
+        await assertConnected(transaction, uid, others);
+      }
       await assertContactAllowed(transaction, uid, others);
       transaction.set(messageRef, message);
       transaction.update(chatRef, {
@@ -803,20 +878,7 @@ export const api = {
     const prepared = await prepareUploadFile(file);
     const path = `uploads/${uid}/${Date.now()}-${prepared.name}`;
     const ref = storageRef(storage, path);
-    const task = uploadBytesResumable(ref, prepared, { contentType: prepared.type || 'application/octet-stream' });
-
-    await new Promise((resolve, reject) => {
-      task.on(
-        'state_changed',
-        (snapshot) => {
-          if (onProgress && snapshot.totalBytes) {
-            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
-          }
-        },
-        reject,
-        resolve
-      );
-    });
+    await uploadFileWithTimeout(ref, prepared, { onProgress });
 
     return {
       url: await getDownloadURL(ref),
@@ -834,20 +896,7 @@ export const api = {
     const safeName = (file.name || 'media').replace(/[^\w.-]+/g, '_');
     const path = `statuses/${uid}/${Date.now()}-${safeName}`;
     const ref = storageRef(storage, path);
-    const task = uploadBytesResumable(ref, file, { contentType: file.type || 'application/octet-stream' });
-
-    await new Promise((resolve, reject) => {
-      task.on(
-        'state_changed',
-        (snapshot) => {
-          if (onProgress && snapshot.totalBytes) {
-            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
-          }
-        },
-        reject,
-        resolve
-      );
-    });
+    await uploadFileWithTimeout(ref, file, { onProgress });
 
     return {
       url: await getDownloadURL(ref),
@@ -861,20 +910,7 @@ export const api = {
     const prepared = await compressProfilePhoto(file);
     const path = `profiles/${uid}/avatar-${Date.now()}.jpg`;
     const ref = storageRef(storage, path);
-    const task = uploadBytesResumable(ref, prepared, { contentType: 'image/jpeg' });
-
-    await new Promise((resolve, reject) => {
-      task.on(
-        'state_changed',
-        (snapshot) => {
-          if (onProgress && snapshot.totalBytes) {
-            onProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
-          }
-        },
-        reject,
-        resolve
-      );
-    });
+    await uploadFileWithTimeout(ref, prepared, { onProgress });
 
     const url = await getDownloadURL(ref);
     const userRef = doc(firestore, 'users', uid);
@@ -1061,6 +1097,9 @@ export const api = {
       where('status', '==', 'pending')
     );
     
+    const state = { incoming: [], sent: [] };
+    const emit = () => handler({ incoming: state.incoming, sent: state.sent });
+
     const incomingUnsub = onSnapshot(incomingQuery, async (snap) => {
       const requests = await Promise.all(
         snap.docs.map(async (docSnap) => {
@@ -1074,7 +1113,8 @@ export const api = {
           };
         })
       );
-      handler({ incoming: requests });
+      state.incoming = requests;
+      emit();
     });
     
     const sentUnsub = onSnapshot(sentQuery, async (snap) => {
@@ -1090,7 +1130,8 @@ export const api = {
           };
         })
       );
-      handler({ sent: requests });
+      state.sent = requests;
+      emit();
     });
     
     return () => {

@@ -13,7 +13,8 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
   });
   const [previewUrl, setPreviewUrl] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [message, setMessage] = useState('');
   const galleryRef = useRef(null);
@@ -41,7 +42,7 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
 
   const uploadPhoto = async (file) => {
     if (!file) return;
-    setBusy(true);
+    setPhotoUploading(true);
     setMessage('');
     setUploadProgress(0);
     const localPreview = URL.createObjectURL(file);
@@ -54,17 +55,19 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
       setForm((current) => ({ ...current, photoURL: user.photoURL || '' }));
       setMessage('Profile picture updated');
     } catch (error) {
-      setMessage(error.message);
+      setMessage(error.message || 'Could not upload profile picture.');
       setPreviewUrl('');
     } finally {
-      setBusy(false);
+      setPhotoUploading(false);
       setUploadProgress(0);
+      if (galleryRef.current) galleryRef.current.value = '';
+      if (cameraRef.current) cameraRef.current.value = '';
     }
   };
 
   const saveProfile = async (event) => {
     event.preventDefault();
-    setBusy(true);
+    setSaving(true);
     setMessage('');
     try {
       const { user } = await api.updateProfile({
@@ -82,13 +85,14 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
 
       setMessage('Profile saved');
     } catch (error) {
-      setMessage(error.message);
+      setMessage(error.message || 'Could not save profile.');
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   };
 
   const displayPhoto = previewUrl || form.photoURL;
+  const busy = saving || photoUploading;
 
   return (
     <div className="fixed inset-0 z-30 grid place-items-end bg-gradient-to-tr from-cyan-950/40 to-aqua-950/20 p-3 backdrop-blur-sm sm:place-items-center">
@@ -104,7 +108,7 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
           <div className="rounded-full bg-gradient-to-tr from-cyan-500 via-aqua-400 to-emerald-400 p-[3px] shadow-lg">
             <Avatar name={form.displayName} image={displayPhoto} size="xl" />
           </div>
-          {busy && uploadProgress > 0 && (
+          {photoUploading && uploadProgress > 0 && (
             <div className="w-full max-w-xs">
               <div className="h-1.5 overflow-hidden rounded-full bg-aqua-100">
                 <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${uploadProgress}%` }} />
@@ -179,7 +183,7 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
         </label>
 
         <button disabled={busy} className="w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-3 font-bold text-white shadow-lg disabled:opacity-50">
-          {busy ? 'Saving...' : 'Save changes'}
+          {photoUploading ? 'Uploading photo...' : saving ? 'Saving...' : 'Save changes'}
         </button>
 
         {message && <p className="mt-4 rounded-2xl border border-aqua-200/60 bg-aqua-100/60 px-4 py-3 text-sm font-bold text-cyan-800">{message}</p>}

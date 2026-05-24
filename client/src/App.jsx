@@ -213,6 +213,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return profile?.connections?.includes(userId) || false;
   };
 
+  const patchProfileConnections = (userId, connected) => {
+    setProfile((current) => {
+      if (!current) return current;
+      const currentConnections = current.connections || [];
+      const connections = connected
+        ? [...new Set([...currentConnections, userId])]
+        : currentConnections.filter((id) => id !== userId);
+      return { ...current, connections };
+    });
+  };
+
   const selectedPeer = useMemo(() => directPeer(selectedChat, profile), [selectedChat, profile]);
 
   const statusContactIds = useMemo(
@@ -579,6 +590,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     try {
       const requestId = `${user._id}_${profile._id}`;
       const data = await api.acceptConnectionRequest(requestId);
+      patchProfileConnections(user._id, true);
       updateUser(user._id, { connectionStatus: data.status, directChatId: data.chatId });
       if (data.chat) {
         openChat(data.chat);
@@ -601,6 +613,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const handleDisconnect = async (userId) => {
     try {
       await api.disconnectUser(userId);
+      patchProfileConnections(userId, false);
       updateUser(userId, { connectionStatus: 'none' });
       toastSuccess('Disconnected');
     } catch (err) {
@@ -611,6 +624,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const handleAcceptRequest = async (requestId) => {
     try {
       const data = await api.acceptConnectionRequest(requestId);
+      if (data.chat) {
+        const peerId = data.chat.participantIds?.find((id) => id !== profile._id);
+        if (peerId) patchProfileConnections(peerId, true);
+        openChat(data.chat);
+      }
       toastSuccess('Connection accepted');
       await refresh();
     } catch (err) {
