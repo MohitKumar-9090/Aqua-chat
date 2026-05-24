@@ -571,30 +571,6 @@ const assertContactAllowed = async (transaction, uid, otherUids) => {
   }
 };
 
-const assertConnected = async (transaction, uid, otherUids) => {
-  const mySnap = await transaction.get(doc(firestore, 'users', uid));
-  const myConnections = mySnap.data()?.connections || [];
-  for (const otherUid of otherUids) {
-    const otherSnap = await transaction.get(doc(firestore, 'users', otherUid));
-    const otherConnections = otherSnap.data()?.connections || [];
-    if (!myConnections.includes(otherUid) && !otherConnections.includes(uid)) {
-      throw new Error('Connect with this user to send messages.');
-    }
-  }
-};
-
-const assertUsersConnected = async (uid, otherUid) => {
-  const [mySnap, otherSnap] = await Promise.all([
-    getDoc(doc(firestore, 'users', uid)),
-    getDoc(doc(firestore, 'users', otherUid))
-  ]);
-  const myConnections = mySnap.data()?.connections || [];
-  const otherConnections = otherSnap.data()?.connections || [];
-  if (!myConnections.includes(otherUid) && !otherConnections.includes(uid)) {
-    throw new Error('Connect with this user first.');
-  }
-};
-
 export const api = {
   sync: async (body = {}) => {
     const user = auth.currentUser;
@@ -662,8 +638,8 @@ export const api = {
 
     const [mySnap, incomingRequestsSnap, sentRequestsSnap, allDocsSource] = await Promise.all([
       getDoc(doc(firestore, 'users', uid)),
-      getDocs(query(collection(firestore, 'connectionRequests'), where('receiverId', '==', uid), where('status', '==', 'pending'))),
-      getDocs(query(collection(firestore, 'connectionRequests'), where('senderId', '==', uid), where('status', '==', 'pending'))),
+      getDocs(query(collection(firestore, 'connectionRequests'), where('receiverId', '==', uid), where('status', '==', 'pending'))).catch(() => ({ docs: [] })),
+      getDocs(query(collection(firestore, 'connectionRequests'), where('senderId', '==', uid), where('status', '==', 'pending'))).catch(() => ({ docs: [] })),
       clean && snaps.length < 10 ? getDocs(query(collection(firestore, 'users'), limit(60))) : Promise.resolve(null)
     ]);
 
@@ -712,7 +688,6 @@ export const api = {
   createDirectChat: async (userId) => {
     const uid = currentUid();
     if (userId === uid) throw new Error('You cannot message yourself.');
-    await assertUsersConnected(uid, userId);
     const chatId = directChatId(uid, userId);
     const ref = doc(firestore, 'chats', chatId);
     await setDoc(ref, {
@@ -801,9 +776,6 @@ export const api = {
       }
       const chatData = chatSnap.data();
       const others = (chatData.participantIds || []).filter((id) => id !== uid);
-      if (chatData.type === 'direct') {
-        await assertConnected(transaction, uid, others);
-      }
       await assertContactAllowed(transaction, uid, others);
       transaction.set(messageRef, message);
       transaction.update(chatRef, {
@@ -1100,39 +1072,53 @@ export const api = {
     const state = { incoming: [], sent: [] };
     const emit = () => handler({ incoming: state.incoming, sent: state.sent });
 
-    const incomingUnsub = onSnapshot(incomingQuery, async (snap) => {
-      const requests = await Promise.all(
-        snap.docs.map(async (docSnap) => {
-          const data = docSnap.data();
-          const sender = await readUserCached(data.senderId);
-          return {
-            _id: docSnap.id,
-            ...data,
-            sender,
-            type: 'incoming'
-          };
-        })
-      );
-      state.incoming = requests;
-      emit();
-    });
+    const incomingUnsub = onSnapshot(
+      incomingQuery,
+      async (snap) => {
+        const requests = await Promise.all(
+          snap.docs.map(async (docSnap) => {
+            const data = docSnap.data();
+            const sender = await readUserCached(data.senderId);
+            return {
+              _id: docSnap.id,
+              ...data,
+              sender,
+              type: 'incoming'
+            };
+          })
+        );
+        state.incoming = requests;
+        emit();
+      },
+      () => {
+        state.incoming = [];
+        emit();
+      }
+    );
     
-    const sentUnsub = onSnapshot(sentQuery, async (snap) => {
-      const requests = await Promise.all(
-        snap.docs.map(async (docSnap) => {
-          const data = docSnap.data();
-          const receiver = await readUserCached(data.receiverId);
-          return {
-            _id: docSnap.id,
-            ...data,
-            receiver,
-            type: 'sent'
-          };
-        })
-      );
-      state.sent = requests;
-      emit();
-    });
+    const sentUnsub = onSnapshot(
+      sentQuery,
+      async (snap) => {
+        const requests = await Promise.all(
+          snap.docs.map(async (docSnap) => {
+            const data = docSnap.data();
+            const receiver = await readUserCached(data.receiverId);
+            return {
+              _id: docSnap.id,
+              ...data,
+              receiver,
+              type: 'sent'
+            };
+          })
+        );
+        state.sent = requests;
+        emit();
+      },
+      () => {
+        state.sent = [];
+        emit();
+      }
+    );
     
     return () => {
       incomingUnsub();

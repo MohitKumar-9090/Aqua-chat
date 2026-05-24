@@ -16,7 +16,7 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
           : 'Connect';
   const connectionIcon = user.connectionStatus === 'connected' ? UserCheck : UserPlus;
   const ConnectionIcon = connectionIcon;
-  const canMessage = user.connectionStatus === 'connected';
+  const canMessage = true;
   const canConnect = user.connectionStatus !== 'connected' && user.connectionStatus !== 'requested';
   const preview = user.lastMessagePreview || user.phoneNumber || user.bio || statusText(user);
 
@@ -27,7 +27,7 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
   const handleConnect = () => {
     if (connecting) return;
     if (user.connectionStatus === 'incoming') return onAccept(user);
-    if (canMessage) return handleMessage();
+    if (user.connectionStatus === 'connected') return handleMessage();
     if (canConnect) return onConnect(user);
   };
 
@@ -35,9 +35,9 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
     <div
       role="button"
       tabIndex={0}
-      onClick={handleConnect}
+      onClick={handleMessage}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') handleConnect();
+        if (event.key === 'Enter' || event.key === ' ') handleMessage();
       }}
       className="w-full cursor-pointer rounded-2xl border border-transparent p-3 text-left transition duration-200 hover:border-blush-100/50 hover:bg-blush-50/60"
     >

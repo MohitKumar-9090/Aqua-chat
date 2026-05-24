@@ -664,10 +664,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       toastError('You cannot message this user.');
       return;
     }
-    if (selectedChat.type === 'direct' && selectedPeer && !isConnectedUser(selectedPeer._id)) {
-      toastError('Connect with this user to send messages.');
-      return;
-    }
     const chatId = selectedChat._id;
     const tempId = `temp_${Date.now()}`;
     const optimistic = {
@@ -1073,11 +1069,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       toastError('You cannot call this user.');
       return;
     }
-    if (!isGroupCall && !isConnectedUser(selectedPeer._id)) {
-      toastError('Connect with this user to make calls.');
-      return;
-    }
-
     const callId = isGroupCall
       ? `group_call_${selectedChat._id}_${Date.now()}`
       : `call_${[uid, selectedPeer._id].sort().join('_')}_${Date.now()}`;
