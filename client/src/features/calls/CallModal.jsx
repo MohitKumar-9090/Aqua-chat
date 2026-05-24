@@ -17,11 +17,14 @@ export default function CallModal({
   onEnd,
   onMinimize,
   remoteMediaEpoch = 0,
-  callTimer = 0
+  callTimer = 0,
+  remoteParticipants = []
 }) {
   const isVideo = state.callType === 'video';
+  const isGroupCall = state.participants && state.participants.length > 1;
   const showControls = !state.incoming || state.preparing;
   const showTopBar = !isVideo || state.preparing || state.incoming || state.status === 'ringing' || state.connectedAt;
+  
   const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60)
       .toString()
@@ -54,6 +57,137 @@ export default function CallModal({
       {children}
     </button>
   );
+
+  if (isGroupCall && isVideo) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
+        <audio ref={remoteAudioRef} autoPlay playsInline className="sr-only" />
+
+        {/* Grid of participant videos */}
+        <div className="relative min-h-0 flex-1 grid grid-cols-2 gap-1 p-1 sm:gap-2 sm:p-2">
+          {/* Remote participants */}
+          {remoteParticipants.length > 0 ? (
+            remoteParticipants.map((participant, idx) => (
+              <div
+                key={participant.uid || idx}
+                className="relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border border-white/20"
+              >
+                <video
+                  ref={(el) => {
+                    if (el && participant.videoRef) participant.videoRef.current = el;
+                  }}
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute bottom-2 left-2 px-2 py-1 bg-black/50 rounded text-white text-xs font-medium">
+                  {participant.name || 'Participant'}
+                </div>
+              </div>
+            ))
+          ) : (
+            /* Fallback to single remote stream */
+            <div className="relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border border-white/20 col-span-2">
+              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+            </div>
+          )}
+
+          {/* Local video - picture in picture */}
+          {!cameraOff && (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              muted
+              playsInline
+              className="absolute bottom-4 right-4 z-10 h-24 w-20 rounded-lg border-2 border-white/30 object-cover shadow-2xl sm:h-28 sm:w-24"
+            />
+          )}
+        </div>
+
+        {showTopBar && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
+            <div className="space-y-1">
+              <p className="text-center text-sm font-semibold text-cyan-100">
+                {state.preparing
+                  ? `Connecting to ${state.participants?.length || 1} participant${state.participants?.length > 1 ? 's' : ''}…`
+                  : state.incoming
+                  ? 'Incoming group call'
+                  : state.status === 'ringing'
+                  ? `Ringing ${state.participants?.length || 1} participant${state.participants?.length > 1 ? 's' : ''}…`
+                  : callTimeLabel
+                  ? `On call • ${callTimeLabel}`
+                  : 'On group call'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="shrink-0 px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-3">
+          {state.incoming && !state.preparing && (
+            <div className="mb-4 flex justify-center gap-4">
+              <button
+                type="button"
+                onClick={onEnd}
+                className="rounded-full bg-gradient-to-r from-rose-500 to-rose-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-rose-900/40"
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={onAnswer}
+                disabled={!state.offer}
+                className="rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {state.offer ? 'Answer' : 'Connecting…'}
+              </button>
+            </div>
+          )}
+
+          {showControls && (
+            <div className="mx-auto flex max-w-md items-center justify-center gap-4 rounded-full bg-black/35 px-5 py-4 backdrop-blur-md sm:gap-6 sm:px-8">
+              {controlBtn(
+                muted,
+                onToggleMute,
+                muted ? 'Unmute' : 'Mute',
+                muted ? <MicOff size={24} /> : <Mic size={24} />
+              )}
+              {isVideo &&
+                controlBtn(
+                  cameraOff,
+                  onToggleCamera,
+                  cameraOff ? 'Turn camera on' : 'Turn camera off',
+                  cameraOff ? <VideoOff size={24} /> : <Video size={24} />
+                )}
+              {controlBtn(
+                !speakerOn,
+                onToggleSpeaker,
+                speakerOn ? 'Speaker off' : 'Speaker on',
+                speakerOn ? <Volume2 size={24} /> : <VolumeX size={24} />
+              )}
+              {onMinimize && !state.incoming && !state.preparing && (
+                <button
+                  type="button"
+                  onClick={onMinimize}
+                  title="Minimize call"
+                  className="grid h-14 w-14 place-items-center rounded-full bg-white/15 text-white transition duration-200 hover:bg-white/25 sm:h-16 sm:w-16"
+                >
+                  <Minimize2 size={24} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onEnd}
+                title="End call"
+                className="grid h-14 w-14 place-items-center rounded-full bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-900/50 transition hover:scale-105 sm:h-16 sm:w-16"
+              >
+                <PhoneOff size={26} />
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
@@ -181,3 +315,4 @@ export default function CallModal({
     </div>
   );
 }
+

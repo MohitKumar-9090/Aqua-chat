@@ -77,6 +77,16 @@ function ChatHeader({
           </button>
         </>
       )}
+      {chat.type === 'group' && callsEnabled && (
+        <>
+          <button type="button" onClick={onAudio} className="rounded-2xl p-2.5 text-slate-600 transition hover:bg-aqua-100/60 hover:text-cyan-700" title="Group voice call">
+            <Phone size={18} />
+          </button>
+          <button type="button" onClick={onVideo} className="rounded-2xl p-2.5 text-slate-600 transition hover:bg-aqua-100/60 hover:text-cyan-700" title="Group video call">
+            <Video size={18} />
+          </button>
+        </>
+      )}
       <button
         ref={menuAnchorRef}
         type="button"

@@ -177,6 +177,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const remoteAudioRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteStreamRef = useRef(null);
+  const peerConnectionsRef = useRef(new Map());
+  const remoteStreamsByUidRef = useRef({});
   const callUnsubscribersRef = useRef([]);
   const hasAutoSelectedChatRef = useRef(false);
   const selectedChatRef = useRef(selectedChat);
@@ -742,26 +744,44 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     });
   };
 
-  const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null }) => {
+  const getCombinedRemoteStream = () => {
+    const combined = new MediaStream();
+    Object.values(remoteStreamsByUidRef.current).forEach((stream) => {
+      stream?.getTracks().forEach((track) => {
+        if (!combined.getTracks().some((candidate) => candidate.id === track.id)) {
+          combined.addTrack(track);
+        }
+      });
+    });
+    return combined;
+  };
+
+  const handleRemoteStream = (remoteUid, remoteStream) => {
+    remoteStreamsByUidRef.current = {
+      ...remoteStreamsByUidRef.current,
+      [remoteUid]: remoteStream
+    };
+    remoteStreamRef.current = getCombinedRemoteStream();
+    setRemoteMediaEpoch((n) => n + 1);
+    markCallConnected();
+  };
+
+  const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null, skipRoomCreation = false }) => {
     const calls = await getCallRuntime();
     const uid = await calls.waitForAuthReady();
     setCallState((current) => ({ ...current, preparing: true }));
 
     try {
-      if (isCaller) {
+      if (isCaller && !skipRoomCreation) {
         await calls.createCallRoom({ callId, from: uid, to: remoteUid, callType });
-      } else {
+      } else if (!isCaller) {
         await calls.verifyCallAccess(callId, uid);
       }
 
       const [stream, pc] = await Promise.all([
         getCallMediaStream(callType),
         calls.createPeerConnection(
-          (remoteStream) => {
-            remoteStreamRef.current = remoteStream;
-            setRemoteMediaEpoch((n) => n + 1);
-            markCallConnected();
-          },
+          (remoteStream) => handleRemoteStream(remoteUid, remoteStream),
           (candidate) => {
             calls.pushIceCandidate(callId, uid, candidate).catch((error) => {
               console.error('[Call] ICE write failed:', error.message);
@@ -772,7 +792,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
       attachLocalStream(stream, callType);
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-      peerConnectionRef.current = pc;
+      peerConnectionsRef.current.set(remoteUid, pc);
+      if (!peerConnectionRef.current) peerConnectionRef.current = pc;
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
           markCallConnected();
@@ -780,22 +801,25 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       };
 
       const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
-        if (!candidate || !peerConnectionRef.current) return;
-        peerConnectionRef.current.addRemoteIceCandidate(candidate).catch(console.error);
+        const connection = peerConnectionsRef.current.get(remoteUid);
+        if (!candidate || !connection) return;
+        connection.addRemoteIceCandidate(candidate).catch(console.error);
       });
       callUnsubscribersRef.current.push(remoteCandidates);
 
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
-        if (!room || !peerConnectionRef.current) return;
-        const answer = room.answer;
-        if (isCaller && answer && !peerConnectionRef.current.currentRemoteDescription) {
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
-          await peerConnectionRef.current.flushRemoteIceCandidates();
+        if (!room) return;
+        const connection = peerConnectionsRef.current.get(remoteUid);
+        if (isCaller && connection && room.answers?.[remoteUid] && !connection.currentRemoteDescription) {
+          await connection.setRemoteDescription(new RTCSessionDescription(room.answers[remoteUid]));
+          await connection.flushRemoteIceCandidates();
+        }
+        if (!isCaller && connection && room.status === 'ended') {
+          endCall();
         }
         if (room.status) {
           setCallState((current) => (current ? { ...current, status: room.status } : current));
         }
-        if (room.status === 'ended') endCall();
       });
       callUnsubscribersRef.current.push(roomListener);
 
@@ -805,8 +829,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           offerToReceiveVideo: callType === 'video'
         });
         await pc.setLocalDescription(offer);
-        await calls.publishCallOffer(callId, offer);
-        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType });
+        await calls.publishCallOffer(callId, offer, remoteUid);
+        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType, offer });
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
@@ -815,7 +839,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           offerToReceiveVideo: callType === 'video'
         });
         await pc.setLocalDescription(answer);
-        await calls.sendCallAnswer(callId, uid, answer);
+        await calls.sendCallAnswer(callId, uid, answer, uid);
       }
     } finally {
       setCallState((current) => {
@@ -875,15 +899,32 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [callState?.active, callState?.incoming, callState?.callId]);
 
   const startCall = async (callType) => {
-    if (!selectedPeer || callState?.active) return;
-    if (!canContactUser(blockStateRef.current, selectedPeer._id)) {
+    const isGroupCall = selectedChat?.type === 'group';
+    if (!selectedPeer && !isGroupCall) return;
+    if (callState?.active) return;
+
+    const calls = await getCallRuntime();
+    const uid = await calls.waitForAuthReady();
+
+    const targetIds = isGroupCall
+      ? (selectedChat?.participantIds || []).filter((id) => id !== uid)
+      : [selectedPeer._id];
+
+    if (!targetIds.length) {
+      toastError('No group members are available for this call.');
+      return;
+    }
+
+    if (!isGroupCall && !canContactUser(blockStateRef.current, selectedPeer._id)) {
       toastError('You cannot call this user.');
       return;
     }
-    const calls = await getCallRuntime();
-    const uid = await calls.waitForAuthReady();
-    const callId = `call_${[uid, selectedPeer._id].sort().join('_')}_${Date.now()}`;
+
+    const callId = isGroupCall
+      ? `group_call_${selectedChat._id}_${Date.now()}`
+      : `call_${[uid, selectedPeer._id].sort().join('_')}_${Date.now()}`;
     const activeChatId = selectedChat?._id || findDirectChatByPeerId(selectedPeer._id)?._id;
+
     setActiveCallId(callId);
     setCallMinimized(false);
     setCallState({
@@ -892,19 +933,32 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       callId,
       chatId: activeChatId,
       callType,
-      caller: selectedPeer,
+      caller: isGroupCall ? { _id: uid, displayName: 'You' } : selectedPeer,
       from: uid,
-      to: selectedPeer._id,
+      to: isGroupCall ? targetIds : selectedPeer._id,
       status: 'ringing',
       muted: false,
       cameraOff: callType === 'voice',
       speakerOn: true,
       startedAt: Date.now(),
+      participants: isGroupCall ? targetIds : [selectedPeer._id],
       minimized: false
     });
 
     try {
-      await setupPeer({ callId, remoteUid: selectedPeer._id, callType, isCaller: true });
+      await calls.createCallRoom({
+        callId,
+        from: uid,
+        to: targetIds,
+        callType,
+        participantIds: targetIds
+      });
+
+      await Promise.allSettled(
+        targetIds.map((remoteUid) => 
+          setupPeer({ callId, remoteUid, callType, isCaller: true, skipRoomCreation: true })
+        )
+      );
     } catch (error) {
       console.error(error);
       toastError(error.message || 'Could not start call. Check microphone/camera permissions.');
@@ -913,26 +967,44 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const answerCall = async () => {
-    if (!callState?.callId || !callState?.offer) return;
+    if (!callState?.callId) return;
     stopIncomingRing();
     setCallMinimized(false);
-    // Keep incoming=true during setup so the subscribeIncomingCalls null-handler
-    // doesn't nuke callState when Firebase clears userIncoming.
     setCallState((current) => (current ? { ...current, preparing: true } : current));
     try {
       const calls = await getCallRuntime();
       const uid = await calls.waitForAuthReady();
-      if (callState.to && uid && callState.to !== uid) {
+
+      const isGroupCall = Array.isArray(callState.to) || callState.participants?.length > 1;
+      const callers = isGroupCall ? callState.to : [callState.from];
+
+      if (!isGroupCall && callState.to && uid && callState.to !== uid) {
         toastError('This call is for another account. Sign in with the correct user and try again.');
         return;
       }
-      await setupPeer({
-        callId: callState.callId,
-        remoteUid: callState.from,
-        callType: callState.callType,
-        isCaller: false,
-        remoteOffer: callState.offer
-      });
+
+      if (isGroupCall) {
+        await Promise.allSettled(
+          callers.map((callerId) =>
+            setupPeer({
+              callId: callState.callId,
+              remoteUid: callerId,
+              callType: callState.callType,
+              isCaller: false,
+              remoteOffer: callState.offer,
+              skipRoomCreation: true
+            })
+          )
+        );
+      } else {
+        await setupPeer({
+          callId: callState.callId,
+          remoteUid: callState.from,
+          callType: callState.callType,
+          isCaller: false,
+          remoteOffer: callState.offer
+        });
+      }
       setCallState((current) => (current ? { ...current, startedAt: current.startedAt || Date.now() } : current));
     } catch (error) {
       console.error(error);
@@ -977,6 +1049,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     cleanupCallListeners();
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
+    peerConnectionsRef.current.forEach((pc) => pc?.close());
+    peerConnectionsRef.current.clear();
+    Object.values(remoteStreamsByUidRef.current).forEach((stream) => stream?.getTracks()?.forEach((track) => track.stop()));
+    remoteStreamsByUidRef.current = {};
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     remoteStreamRef.current = null;
@@ -1025,7 +1101,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const caller =
           usersRef.current.find((user) => user._id === incoming.from) ||
           { _id: incoming.from, displayName: 'Incoming call' };
-        const incomingChat = findDirectChatByPeerId(incoming.from);
+        
+        const isGroupCall = Array.isArray(incoming.to) || (incoming.participants && Object.keys(incoming.participants || {}).length > 2);
+        const incomingChat = isGroupCall
+          ? chats.find((chat) => chat.type === 'group' && incoming.id.startsWith(`group_call_${chat._id}`))
+          : findDirectChatByPeerId(incoming.from);
+
         playIncomingRing();
         setActiveCallId(incoming.id);
         setCallMinimized(false);
@@ -1035,7 +1116,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           callId: incoming.id,
           chatId: incomingChat?._id,
           callType: incoming.callType || 'voice',
-          caller,
+          caller: isGroupCall ? { _id: incoming.from, displayName: 'Group call' } : caller,
           from: incoming.from,
           to: incoming.to,
           offer: incoming.offer || null,
@@ -1043,6 +1124,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           muted: false,
           cameraOff: (incoming.callType || 'voice') === 'voice',
           speakerOn: true,
+          participants: isGroupCall ? (Array.isArray(incoming.to) ? incoming.to : [incoming.from, incoming.to]) : undefined,
           minimized: false
         });
       });

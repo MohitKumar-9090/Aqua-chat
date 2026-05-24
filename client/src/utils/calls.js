@@ -51,7 +51,18 @@ const signalingUid = async () => {
   return uid;
 };
 
-const callParticipants = (from, to) => ({ [from]: true, [to]: true });
+const buildParticipants = (ids = []) =>
+  ids.reduce((acc, uid) => ({
+    ...acc,
+    [uid]: true
+  }), {});
+
+const callParticipants = (from, to) => {
+  if (Array.isArray(to)) {
+    return buildParticipants([from, ...to]);
+  }
+  return { [from]: true, [to]: true };
+};
 
 const isParticipant = (room, uid) =>
   Boolean(room && (room.from === uid || room.to === uid || room.participants?.[uid]));
@@ -193,7 +204,7 @@ export const subscribeIncomingCalls = (uid, handler) => {
       dbRef(realtimeDb, `calls/${callId}`),
       (roomSnap) => {
         const room = roomSnap.val();
-        if (!room || room.to !== uid) {
+        if (!room || !isParticipant(room, uid)) {
           handler(null);
           return;
         }
@@ -204,15 +215,18 @@ export const subscribeIncomingCalls = (uid, handler) => {
         if (room.status !== 'ringing' && room.status !== 'active') {
           return;
         }
-        logRtdb('incoming:ring', `calls/${callId}`, { hasOffer: Boolean(room.offer), status: room.status });
+        logRtdb('incoming:ring', `calls/${callId}`, {
+          hasOffer: Boolean(room.offer || room.offers?.[uid] || ringEntry.offer),
+          status: room.status
+        });
         handler({
           id: callId,
           from: room.from || ringEntry.from,
-          to: room.to || uid,
+          to: uid,
           callType: room.callType || ringEntry.callType || 'voice',
           status: room.status,
-          offer: room.offer || null,
-          answer: room.answer || null
+          offer: room.offer || room.offers?.[uid] || ringEntry.offer || null,
+          answer: room.answer || room.answers?.[uid] || null
         });
       },
       (error) => logRtdbError('onValue', `calls/${callId}`, error)
@@ -259,9 +273,10 @@ export const subscribeCallRoom = (callId, handler) => {
   );
 };
 
-export const createCallRoom = async ({ callId, from, to, callType }) => {
+export const createCallRoom = async ({ callId, from, to, callType, participantIds = null }) => {
   const callerUid = from || (await signalingUid());
   const path = `calls/${callId}`;
+  const participants = participantIds ? callParticipants(callerUid, participantIds) : callParticipants(callerUid, to);
   await rtdbSet(path, {
     from: callerUid,
     to,
@@ -269,23 +284,29 @@ export const createCallRoom = async ({ callId, from, to, callType }) => {
     status: 'ringing',
     offer: null,
     answer: null,
-    participants: callParticipants(callerUid, to),
+    offers: null,
+    answers: null,
+    participants,
     createdAt: Date.now()
   }, 'createCallRoom');
 };
 
-export const ringCallee = async ({ callId, from, to, callType }) => {
+export const ringCallee = async ({ callId, from, to, callType, offer = null }) => {
   const callerUid = from || (await signalingUid());
-  const path = `userIncoming/${to}/${callId}`;
-  await rtdbSet(path, {
-    from: callerUid,
-    callType,
-    createdAt: Date.now()
-  }, 'ringCallee');
+  const entries = Array.isArray(to) ? to : [to];
+  await Promise.all(entries.map(async (recipient) => {
+    const path = `userIncoming/${recipient}/${callId}`;
+    await rtdbSet(path, {
+      from: callerUid,
+      callType,
+      offer: offer ? JSON.parse(JSON.stringify(offer)) : null,
+      createdAt: Date.now()
+    }, 'ringCallee');
+  }));
 };
 
-export const publishCallOffer = async (callId, offer) => {
-  const path = `calls/${callId}/offer`;
+export const publishCallOffer = async (callId, offer, targetUid = null) => {
+  const path = targetUid ? `calls/${callId}/offers/${targetUid}` : `calls/${callId}/offer`;
   await rtdbSet(path, offer ? JSON.parse(JSON.stringify(offer)) : null, 'publishCallOffer');
 };
 
@@ -335,14 +356,15 @@ export const subscribeIceCandidates = (callId, uid, handler) => {
  * Callee accept: update answer on calls/{callId}, then clear userIncoming/{calleeUid}/{callId}.
  * Operations are split so a failing remove does not mask a successful answer.
  */
-export const sendCallAnswer = async (callId, calleeUid, answer) => {
+export const sendCallAnswer = async (callId, calleeUid, answer, targetUid = null) => {
   const uid = calleeUid || (await signalingUid());
   await waitForAuthReady();
   await verifyCallAccess(callId, uid);
 
   const incomingPath = `userIncoming/${uid}/${callId}`;
+  const answerPath = targetUid ? `calls/${callId}/answers/${targetUid}` : `calls/${callId}/answer`;
 
-  await rtdbSet(`calls/${callId}/answer`, JSON.parse(JSON.stringify(answer)), 'sendCallAnswer:answer');
+  await rtdbSet(answerPath, JSON.parse(JSON.stringify(answer)), 'sendCallAnswer:answer');
   await rtdbSet(`calls/${callId}/status`, 'active', 'sendCallAnswer:status');
 
   try {
@@ -364,13 +386,14 @@ export const endCallRoom = async (callId, from, to) => {
   } catch {
     // Room may already be gone.
   }
-  await Promise.all([
-    remove(dbRef(realtimeDb, `userIncoming/${to}/${callId}`)).catch((e) =>
-      logRtdbError('remove', `userIncoming/${to}/${callId}`, e)
-    ),
-    remove(dbRef(realtimeDb, `userIncoming/${from}/${callId}`)).catch((e) =>
-      logRtdbError('remove', `userIncoming/${from}/${callId}`, e)
-    ),
+  const removals = [
     remove(dbRef(realtimeDb, `calls/${callId}`)).catch((e) => logRtdbError('remove', `calls/${callId}`, e))
-  ]);
+  ];
+  if (to) {
+    removals.push(remove(dbRef(realtimeDb, `userIncoming/${to}/${callId}`)).catch((e) => logRtdbError('remove', `userIncoming/${to}/${callId}`, e)));
+  }
+  if (from) {
+    removals.push(remove(dbRef(realtimeDb, `userIncoming/${from}/${callId}`)).catch((e) => logRtdbError('remove', `userIncoming/${from}/${callId}`, e)));
+  }
+  await Promise.all(removals);
 };
