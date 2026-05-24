@@ -1,10 +1,10 @@
 import { memo } from 'react';
-import { BadgeCheck, MessageCircle, UserCheck, UserPlus } from 'lucide-react';
+import { BadgeCheck, MessageCircle, UserCheck, UserPlus, UserX } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { statusText } from '../../utils/chat.js';
 import { userHasUnviewedStatus } from '../../utils/statusHelpers.js';
 
-function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onAccept, onFollow, onMessage }) {
+function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onAccept, onFollow, onMessage, onDisconnect }) {
   const connectionLabel = connecting
     ? 'Connecting...'
     : user.connectionStatus === 'connected'
@@ -17,7 +17,7 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
   const connectionIcon = user.connectionStatus === 'connected' ? UserCheck : UserPlus;
   const ConnectionIcon = connectionIcon;
   const canConnect = user.connectionStatus !== 'connected' && user.connectionStatus !== 'requested';
-  const preview = user.lastMessagePreview || user.email || user.phoneNumber || user.bio || statusText(user);
+  const preview = user.lastMessagePreview || user.phoneNumber || user.bio || statusText(user);
 
   const handleConnect = () => {
     if (connecting) return;
@@ -65,7 +65,20 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
               <ConnectionIcon size={14} />
               {connectionLabel}
             </button>
-            <button type="button" onClick={(event) => { event.stopPropagation(); onMessage(user._id); }} className="inline-flex items-center gap-1.5 rounded-xl bg-aqua-50 px-3 py-1.5 text-xs font-black text-cyan-800 transition hover:bg-aqua-100">
+            {user.connectionStatus === 'connected' && onDisconnect && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDisconnect(user._id);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-50 px-3 py-1.5 text-xs font-black text-rose-700 transition hover:bg-rose-100"
+              >
+                <UserX size={14} />
+                Disconnect
+              </button>
+            )}
+            <button type="button" onClick={(event) => { event.stopPropagation(); onMessage(user._id); }} disabled={!user.connectionStatus === 'connected'} className="inline-flex items-center gap-1.5 rounded-xl bg-aqua-50 px-3 py-1.5 text-xs font-black text-cyan-800 transition hover:bg-aqua-100 disabled:opacity-50 disabled:cursor-not-allowed">
               <MessageCircle size={14} />
               Message
             </button>

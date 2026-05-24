@@ -1,5 +1,5 @@
 import { getApp, getApps } from 'firebase/app';
-import { getMessaging, getToken } from 'firebase/messaging';
+import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
 const isProd = import.meta.env.PROD;
 
@@ -68,15 +68,24 @@ export const registerServiceWorker = () => {
 
   if (!swRegistrationPromise) {
     swRegistrationPromise = navigator.serviceWorker
-      .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+      .register('/firebase-messaging-sw.js', { scope: '/', updateViaCache: 'none' })
       .then((registration) => {
         registration.update().catch(() => {});
         return registration;
       })
       .catch((error) => {
         console.error(`Service worker registration failed: ${error.message}`);
-        swRegistrationPromise = null;
-        return null;
+        // Fallback to regular service worker if firebase-messaging-sw fails
+        return navigator.serviceWorker
+          .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+          .then((reg) => {
+            reg.update().catch(() => {});
+            return reg;
+          })
+          .catch((err) => {
+            console.error(`Fallback service worker registration failed: ${err.message}`);
+            return null;
+          });
       });
   }
 
@@ -116,6 +125,14 @@ export const registerMessagingToken = async () => {
     console.warn('FCM token registration failed:', error.message);
     return null;
   }
+};
+
+export const onForegroundMessage = (callback) => {
+  const messaging = getFirebaseMessaging();
+  if (!messaging) return () => {};
+  return onMessage(messaging, (payload) => {
+    callback(payload);
+  });
 };
 
 export const showSystemNotification = async ({ title, body, icon, tag, url, requireInteraction = false, vibrate = [200, 100, 200] }) => {

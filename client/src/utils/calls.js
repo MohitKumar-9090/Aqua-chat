@@ -125,7 +125,8 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   const iceServers = await getIceServers();
   const pc = new RTCPeerConnection({
     iceServers,
-    iceCandidatePoolSize: 10
+    iceCandidatePoolSize: 10,
+    iceTransportPolicy: 'relay'
   });
 
   const pendingRemoteCandidates = [];
@@ -178,6 +179,12 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
 
   pc.onicecandidate = (event) => {
     if (event.candidate) onIceCandidate(event.candidate);
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      // Connection established
+    }
   };
 
   return pc;

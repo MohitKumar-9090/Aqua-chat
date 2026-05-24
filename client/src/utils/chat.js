@@ -11,7 +11,7 @@ export function chatTitle(chat, me) {
   if (!chat) return 'AquaChat';
   if (chat.type === 'group') return chat.name;
   const peer = directPeer(chat, me);
-  return peer?.displayName || peer?.email || peer?.phoneNumber || 'New chat';
+  return peer?.displayName || peer?.phoneNumber || 'New chat';
 }
 
 export function chatImage(chat, me) {

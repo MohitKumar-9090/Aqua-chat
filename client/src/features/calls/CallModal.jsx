@@ -43,7 +43,15 @@ export default function CallModal({
     if (remote?.srcObject) remote.play().catch(() => {});
     if (local?.srcObject) local.play().catch(() => {});
     if (audio?.srcObject) audio.play().catch(() => {});
-  }, [isVideo, state.preparing, state.incoming, state.offer, remoteMediaEpoch, localVideoRef, remoteVideoRef, remoteAudioRef]);
+    
+    // Play participant videos for group calls
+    if (isGroupCall && remoteParticipants.length > 0) {
+      remoteParticipants.forEach((participant) => {
+        const video = participant.videoRef?.current;
+        if (video?.srcObject) video.play().catch(() => {});
+      });
+    }
+  }, [isVideo, state.preparing, state.incoming, state.offer, remoteMediaEpoch, localVideoRef, remoteVideoRef, remoteAudioRef, isGroupCall, remoteParticipants]);
 
   const controlBtn = (active, onClick, title, children) => (
     <button

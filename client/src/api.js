@@ -1005,6 +1005,99 @@ export const api = {
     const { chat } = await api.createDirectChat(userId);
     return { status: 'connected', chatId: chat._id, chat };
   },
+  sendConnectionRequest: async (userId) => {
+    const uid = currentUid();
+    if (userId === uid) throw new Error('You cannot connect with yourself.');
+    const requestId = `${uid}_${userId}`;
+    await setDoc(doc(firestore, 'connectionRequests', requestId), {
+      senderId: uid,
+      receiverId: userId,
+      status: 'pending',
+      createdAt: serverTimestamp()
+    }, { merge: true });
+    return { status: 'requested' };
+  },
+  acceptConnectionRequest: async (requestId) => {
+    const uid = currentUid();
+    const snap = await getDoc(doc(firestore, 'connectionRequests', requestId));
+    if (!snap.exists()) throw new Error('Connection request not found.');
+    const data = snap.data();
+    if (data.receiverId !== uid) throw new Error('You can only accept requests sent to you.');
+    if (data.status !== 'pending') throw new Error('Request is not pending.');
+    
+    await updateDoc(doc(firestore, 'connectionRequests', requestId), { status: 'accepted' });
+    await updateDoc(doc(firestore, 'users', uid), { connections: arrayUnion(data.senderId) });
+    await updateDoc(doc(firestore, 'users', data.senderId), { connections: arrayUnion(uid) });
+    
+    const { chat } = await api.createDirectChat(data.senderId);
+    return { status: 'connected', chatId: chat._id, chat };
+  },
+  rejectConnectionRequest: async (requestId) => {
+    const uid = currentUid();
+    const snap = await getDoc(doc(firestore, 'connectionRequests', requestId));
+    if (!snap.exists()) throw new Error('Connection request not found.');
+    const data = snap.data();
+    if (data.receiverId !== uid) throw new Error('You can only reject requests sent to you.');
+    
+    await updateDoc(doc(firestore, 'connectionRequests', requestId), { status: 'rejected' });
+    return { status: 'rejected' };
+  },
+  disconnectUser: async (userId) => {
+    const uid = currentUid();
+    if (userId === uid) throw new Error('You cannot disconnect from yourself.');
+    await updateDoc(doc(firestore, 'users', uid), { connections: arrayRemove(userId) });
+    await updateDoc(doc(firestore, 'users', userId), { connections: arrayRemove(uid) });
+    return { status: 'disconnected' };
+  },
+  subscribeConnectionRequests: (uid, handler) => {
+    const incomingQuery = query(
+      collection(firestore, 'connectionRequests'),
+      where('receiverId', '==', uid),
+      where('status', '==', 'pending')
+    );
+    const sentQuery = query(
+      collection(firestore, 'connectionRequests'),
+      where('senderId', '==', uid),
+      where('status', '==', 'pending')
+    );
+    
+    const incomingUnsub = onSnapshot(incomingQuery, async (snap) => {
+      const requests = await Promise.all(
+        snap.docs.map(async (docSnap) => {
+          const data = docSnap.data();
+          const sender = await readUserCached(data.senderId);
+          return {
+            _id: docSnap.id,
+            ...data,
+            sender,
+            type: 'incoming'
+          };
+        })
+      );
+      handler({ incoming: requests });
+    });
+    
+    const sentUnsub = onSnapshot(sentQuery, async (snap) => {
+      const requests = await Promise.all(
+        snap.docs.map(async (docSnap) => {
+          const data = docSnap.data();
+          const receiver = await readUserCached(data.receiverId);
+          return {
+            _id: docSnap.id,
+            ...data,
+            receiver,
+            type: 'sent'
+          };
+        })
+      );
+      handler({ sent: requests });
+    });
+    
+    return () => {
+      incomingUnsub();
+      sentUnsub();
+    };
+  },
   acceptConnection: async (userId) => api.connectUser(userId),
   followUser: async (userId) => {
     const uid = currentUid();

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Home, LogOut, Search, Settings, Users, WifiOff } from 'lucide-react';
+import { Download, Home, LogOut, Search, Settings, UserPlus, WifiOff, X } from 'lucide-react';
 import EmailVerificationPanel from './components/auth/EmailVerificationPanel.jsx';
 import Avatar from './components/Avatar.jsx';
 import LoadingSpinner from './components/LoadingSpinner.jsx';
@@ -22,7 +22,7 @@ import { playIncomingRing, stopIncomingRing, unlockCallAudio } from './utils/cal
 import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
-import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification } from './pwa.js';
+import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage } from './pwa.js';
 import { usePwaInstall } from './hooks/usePwaInstall.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import { getCallRuntime } from './utils/callRuntime.js';
@@ -158,6 +158,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [remoteMediaEpoch, setRemoteMediaEpoch] = useState(0);
   const [activeCallId, setActiveCallId] = useState(null);
   const [connectingUserId, setConnectingUserId] = useState(null);
+  const [remoteParticipants, setRemoteParticipants] = useState([]);
+  const [connectionRequests, setConnectionRequests] = useState({ incoming: [], sent: [] });
+  const [requestsOpen, setRequestsOpen] = useState(false);
   const {
     canInstall,
     showInstallButton,
@@ -180,6 +183,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const peerConnectionsRef = useRef(new Map());
   const remoteStreamsByUidRef = useRef({});
   const callUnsubscribersRef = useRef([]);
+  const participantVideoRefsRef = useRef({});
+  const isAnsweringRef = useRef(false);
   const hasAutoSelectedChatRef = useRef(false);
   const selectedChatRef = useRef(selectedChat);
   const activeMessagesChatRef = useRef(null);
@@ -201,6 +206,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (!userId) return false;
     const state = blockStateRef.current;
     return state.blocked?.has(userId) || state.blockedBy?.has(userId);
+  };
+
+  const isConnectedUser = (userId) => {
+    if (!userId) return false;
+    return profile?.connections?.includes(userId) || false;
   };
 
   const selectedPeer = useMemo(() => directPeer(selectedChat, profile), [selectedChat, profile]);
@@ -375,6 +385,39 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return subscribeBlockState(uid, setBlockState);
   }, [profile?._id, firebaseUser?.uid]);
 
+  useEffect(() => {
+    const uid = profile?._id || firebaseUser?.uid;
+    if (!uid) return undefined;
+    return api.subscribeConnectionRequests(uid, (data) => {
+      setConnectionRequests(data);
+    });
+  }, [profile?._id, firebaseUser?.uid]);
+
+  useEffect(() => {
+    const unsubscribe = onForegroundMessage((payload) => {
+      const notification = payload.notification || {};
+      const data = payload.data || {};
+      const title = notification.title || data.title || 'AquaChat';
+      const body = notification.body || data.body || 'You have a new message.';
+      const isCall = data.type === 'call' || data.callType;
+      
+      if (isCall) {
+        playIncomingRing();
+      }
+      
+      showSystemNotification({
+        title,
+        body,
+        icon: notification.icon || data.icon || '/icon-192.png',
+        tag: data.tag || `aquachat-${data.chatId || 'general'}`,
+        url: data.url || '/',
+        requireInteraction: isCall,
+        vibrate: isCall ? [200, 100, 200, 100, 200] : [200, 100, 200]
+      });
+    });
+    return unsubscribe;
+  }, []);
+
   const mergePresence = (user, presence) => {
     if (isBlockedUser(user._id)) {
       return { ...user, isOnline: false, online: false, lastSeen: null };
@@ -521,16 +564,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const connectWithUser = async (user) => {
     setConnectingUserId(user._id);
     try {
-      const data = await api.connectUser(user._id);
-      updateUser(user._id, { connectionStatus: data.status, directChatId: data.chatId });
-      if (data.chat) {
-        openChat(data.chat);
-        toastSuccess(`Connected with ${user.displayName}`);
-      } else {
-        await refresh();
-      }
+      const data = await api.sendConnectionRequest(user._id);
+      updateUser(user._id, { connectionStatus: data.status });
+      toastSuccess(`Connection request sent to ${user.displayName}`);
     } catch (err) {
-      toastError(err.message || 'Could not connect with this user.');
+      toastError(err.message || 'Could not send connection request.');
     } finally {
       setConnectingUserId(null);
     }
@@ -539,7 +577,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const acceptUser = async (user) => {
     setConnectingUserId(user._id);
     try {
-      const data = await api.acceptConnection(user._id);
+      const requestId = `${user._id}_${profile._id}`;
+      const data = await api.acceptConnectionRequest(requestId);
       updateUser(user._id, { connectionStatus: data.status, directChatId: data.chatId });
       if (data.chat) {
         openChat(data.chat);
@@ -559,6 +598,35 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     updateUser(user._id, { isFollowing: data.isFollowing });
   };
 
+  const handleDisconnect = async (userId) => {
+    try {
+      await api.disconnectUser(userId);
+      updateUser(userId, { connectionStatus: 'none' });
+      toastSuccess('Disconnected');
+    } catch (err) {
+      toastError(err.message || 'Could not disconnect.');
+    }
+  };
+
+  const handleAcceptRequest = async (requestId) => {
+    try {
+      const data = await api.acceptConnectionRequest(requestId);
+      toastSuccess('Connection accepted');
+      await refresh();
+    } catch (err) {
+      toastError(err.message || 'Could not accept request.');
+    }
+  };
+
+  const handleRejectRequest = async (requestId) => {
+    try {
+      await api.rejectConnectionRequest(requestId);
+      toastSuccess('Request rejected');
+    } catch (err) {
+      toastError(err.message || 'Could not reject request.');
+    }
+  };
+
   const handleInstall = async () => {
     const choice = await installApp();
     if (choice?.outcome === 'accepted') {
@@ -576,6 +644,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (!selectedChat) return;
     if (selectedChat.type === 'direct' && selectedPeer && !canContactUser(blockStateRef.current, selectedPeer._id)) {
       toastError('You cannot message this user.');
+      return;
+    }
+    if (selectedChat.type === 'direct' && selectedPeer && !isConnectedUser(selectedPeer._id)) {
+      toastError('Connect with this user to send messages.');
       return;
     }
     const chatId = selectedChat._id;
@@ -714,15 +786,27 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const isVideo = callStateRef.current?.callType === 'video';
     const speakerOn = callStateRef.current?.speakerOn !== false;
 
-    if (video) {
+    if (video && video.srcObject !== stream) {
       video.srcObject = stream;
       video.muted = !isVideo || !speakerOn;
       video.play().catch(() => {});
     }
-    if (audio) {
+    if (audio && audio.srcObject !== stream) {
       audio.srcObject = stream;
       audio.muted = isVideo || !speakerOn;
       audio.play().catch(() => {});
+    }
+    
+    // Attach streams to participant video refs for group calls
+    const isGroupCall = callStateRef.current?.participants?.length > 1;
+    if (isGroupCall) {
+      Object.entries(remoteStreamsByUidRef.current).forEach(([uid, stream]) => {
+        const participantVideoRef = participantVideoRefsRef.current[uid];
+        if (participantVideoRef?.current && participantVideoRef.current.srcObject !== stream) {
+          participantVideoRef.current.srcObject = stream;
+          participantVideoRef.current.play().catch(() => {});
+        }
+      });
     }
   };
 
@@ -761,12 +845,54 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       ...remoteStreamsByUidRef.current,
       [remoteUid]: remoteStream
     };
+    
+    // Create video ref for participant if not exists (group calls)
+    if (!participantVideoRefsRef.current[remoteUid]) {
+      participantVideoRefsRef.current[remoteUid] = { current: null };
+    }
+    
+    // Attach stream to participant video ref if exists (group calls)
+    const participantVideoRef = participantVideoRefsRef.current[remoteUid];
+    if (participantVideoRef?.current && remoteStream) {
+      if (participantVideoRef.current.srcObject !== remoteStream) {
+        participantVideoRef.current.srcObject = remoteStream;
+        participantVideoRef.current.play().catch(() => {});
+      }
+    }
+    
+    // Update remote participants state for group calls
+    const isGroupCall = callStateRef.current?.participants?.length > 1;
+    if (isGroupCall) {
+      setRemoteParticipants((prev) => {
+        const existing = prev.find((p) => p.uid === remoteUid);
+        if (existing) {
+          return prev.map((p) => (p.uid === remoteUid ? { ...p, hasStream: true } : p));
+        }
+        const user = usersRef.current.find((u) => u._id === remoteUid);
+        return [
+          ...prev,
+          {
+            uid: remoteUid,
+            name: user?.displayName || 'Participant',
+            videoRef: participantVideoRefsRef.current[remoteUid],
+            hasStream: true
+          }
+        ];
+      });
+    }
+    
     remoteStreamRef.current = getCombinedRemoteStream();
     setRemoteMediaEpoch((n) => n + 1);
     markCallConnected();
   };
 
   const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null, skipRoomCreation = false }) => {
+    // Prevent duplicate peer connections for same remoteUid
+    if (peerConnectionsRef.current.has(remoteUid)) {
+      console.warn('[Call] Peer connection already exists for', remoteUid);
+      return;
+    }
+
     const calls = await getCallRuntime();
     const uid = await calls.waitForAuthReady();
     setCallState((current) => ({ ...current, preparing: true }));
@@ -797,6 +923,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
           markCallConnected();
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          console.warn('[Call] Peer connection state:', pc.connectionState);
         }
       };
 
@@ -816,6 +944,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         }
         if (!isCaller && connection && room.status === 'ended') {
           endCall();
+          return;
+        }
+        if (isCaller && connection && room.status === 'ended') {
+          endCall();
+          return;
         }
         if (room.status) {
           setCallState((current) => (current ? { ...current, status: room.status } : current));
@@ -829,8 +962,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           offerToReceiveVideo: callType === 'video'
         });
         await pc.setLocalDescription(offer);
-        await calls.publishCallOffer(callId, offer, remoteUid);
-        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType, offer });
+        // Publish offer and ring in parallel for faster connection
+        await Promise.all([
+          calls.publishCallOffer(callId, offer, remoteUid),
+          calls.ringCallee({ callId, from: uid, to: remoteUid, callType, offer })
+        ]);
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
@@ -839,7 +975,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           offerToReceiveVideo: callType === 'video'
         });
         await pc.setLocalDescription(answer);
-        await calls.sendCallAnswer(callId, uid, answer, uid);
+        await calls.sendCallAnswer(callId, uid, answer, remoteUid);
       }
     } finally {
       setCallState((current) => {
@@ -858,9 +994,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     // Retry to handle Suspense lazy-mount race: CallModal's video refs
     // may not exist in the DOM yet when ontrack fires.
     const retryTimers = [
-      setTimeout(() => attachRemoteMedia(), 100),
+      setTimeout(() => attachRemoteMedia(), 50),
+      setTimeout(() => attachRemoteMedia(), 200),
       setTimeout(() => attachRemoteMedia(), 500),
-      setTimeout(() => attachRemoteMedia(), 1500),
     ];
     return () => retryTimers.forEach(clearTimeout);
   }, [remoteMediaEpoch]);
@@ -919,6 +1055,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       toastError('You cannot call this user.');
       return;
     }
+    if (!isGroupCall && !isConnectedUser(selectedPeer._id)) {
+      toastError('Connect with this user to make calls.');
+      return;
+    }
 
     const callId = isGroupCall
       ? `group_call_${selectedChat._id}_${Date.now()}`
@@ -927,6 +1067,27 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     setActiveCallId(callId);
     setCallMinimized(false);
+    
+    // Initialize remote participants for group calls
+    if (isGroupCall) {
+      participantVideoRefsRef.current = {};
+      targetIds.forEach((targetId) => {
+        participantVideoRefsRef.current[targetId] = { current: null };
+      });
+      const participants = targetIds.map((targetId) => {
+        const user = usersRef.current.find((u) => u._id === targetId);
+        return {
+          uid: targetId,
+          name: user?.displayName || 'Participant',
+          videoRef: participantVideoRefsRef.current[targetId],
+          hasStream: false
+        };
+      });
+      setRemoteParticipants(participants);
+    } else {
+      setRemoteParticipants([]);
+    }
+    
     setCallState({
       active: true,
       incoming: false,
@@ -968,9 +1129,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const answerCall = async () => {
     if (!callState?.callId) return;
+    if (isAnsweringRef.current) return;
+    isAnsweringRef.current = true;
     stopIncomingRing();
     setCallMinimized(false);
-    setCallState((current) => (current ? { ...current, preparing: true } : current));
+    setCallState((current) => (current ? { ...current, preparing: true, incoming: false } : current));
     try {
       const calls = await getCallRuntime();
       const uid = await calls.waitForAuthReady();
@@ -980,6 +1143,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
       if (!isGroupCall && callState.to && uid && callState.to !== uid) {
         toastError('This call is for another account. Sign in with the correct user and try again.');
+        isAnsweringRef.current = false;
         return;
       }
 
@@ -1010,6 +1174,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       console.error(error);
       toastError(error.message || 'Could not answer call.');
       endCall();
+    } finally {
+      isAnsweringRef.current = false;
     }
   };
 
@@ -1039,6 +1205,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const endCall = () => {
     stopIncomingRing();
+    isAnsweringRef.current = false;
     const state = callStateRef.current;
     if (state) {
       void recordCallHistory(state);
@@ -1046,6 +1213,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const endingCallId = activeCallId || state?.callId;
     const from = state?.from || auth?.currentUser?.uid || profile?._id;
     const to = state?.to || selectedPeer?._id;
+    
+    // Signal end to other party immediately before cleanup
+    if (endingCallId) {
+      getCallRuntime().then((calls) => calls.endCallRoom(endingCallId, from, to)).catch(console.error);
+    }
+    
     cleanupCallListeners();
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
@@ -1059,9 +1232,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
-    if (endingCallId && to) {
-      getCallRuntime().then((calls) => calls.endCallRoom(endingCallId, from, to)).catch(console.error);
-    }
+    Object.values(participantVideoRefsRef.current).forEach((ref) => {
+      if (ref?.current) ref.current.srcObject = null;
+    });
+    participantVideoRefsRef.current = {};
+    setRemoteParticipants([]);
     setActiveCallId(null);
     setCallState(null);
     setCallMinimized(false);
@@ -1084,6 +1259,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             stopIncomingRing();
             setActiveCallId(null);
             setCallState(null);
+            setRemoteParticipants([]);
           }
           return;
         }
@@ -1106,6 +1282,27 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const incomingChat = isGroupCall
           ? chats.find((chat) => chat.type === 'group' && incoming.id.startsWith(`group_call_${chat._id}`))
           : findDirectChatByPeerId(incoming.from);
+
+        // Initialize remote participants for incoming group calls
+        if (isGroupCall) {
+          participantVideoRefsRef.current = {};
+          const callers = Array.isArray(incoming.to) ? incoming.to : [incoming.from, incoming.to].filter(id => id !== uid);
+          callers.forEach((callerId) => {
+            participantVideoRefsRef.current[callerId] = { current: null };
+          });
+          const participants = callers.map((callerId) => {
+            const user = usersRef.current.find((u) => u._id === callerId);
+            return {
+              uid: callerId,
+              name: user?.displayName || 'Participant',
+              videoRef: participantVideoRefsRef.current[callerId],
+              hasStream: false
+            };
+          });
+          setRemoteParticipants(participants);
+        } else {
+          setRemoteParticipants([]);
+        }
 
         playIncomingRing();
         setActiveCallId(incoming.id);
@@ -1172,6 +1369,18 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   <Download size={18} />
                 </button>
               )}
+              <button
+                onClick={() => setRequestsOpen(!requestsOpen)}
+                className="relative rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700"
+                title="Connection requests"
+              >
+                <UserPlus size={18} />
+                {connectionRequests.incoming.length > 0 && (
+                  <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-rose-500 px-1 text-[11px] font-black text-white">
+                    {connectionRequests.incoming.length}
+                  </span>
+                )}
+              </button>
               <button onClick={() => setSettingsOpen(true)} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Settings">
                 <Settings size={18} />
               </button>
@@ -1272,6 +1481,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     onAccept={acceptUser}
                     onFollow={followUser}
                     onMessage={openDirect}
+                    onDisconnect={handleDisconnect}
                   />
                 ))
               ) : totalUsers === 0 ? (
@@ -1339,6 +1549,69 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           <GroupModal users={users} onClose={() => setGroupOpen(false)} onCreated={(chat) => { setChats((current) => [chat, ...current]); setSelectedChat(chat); setGroupOpen(false); }} />
         </Suspense>
       )}
+      {requestsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setRequestsOpen(false)}>
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-xl font-black text-cyan-950">Connection Requests</h3>
+              <button onClick={() => setRequestsOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-100">
+                <X size={20} />
+              </button>
+            </div>
+            
+            {connectionRequests.incoming.length === 0 && connectionRequests.sent.length === 0 ? (
+              <p className="py-8 text-center text-slate-500">No connection requests</p>
+            ) : (
+              <div className="max-h-96 space-y-4 overflow-y-auto">
+                {connectionRequests.incoming.length > 0 && (
+                  <div>
+                    <h4 className="mb-2 text-sm font-bold text-slate-700">Incoming Requests</h4>
+                    {connectionRequests.incoming.map((request) => (
+                      <div key={request._id} className="flex items-center gap-3 rounded-2xl border border-aqua-100 bg-aqua-50/50 p-3">
+                        <Avatar user={request.sender} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-bold text-cyan-950">{request.sender?.displayName || 'User'}</p>
+                          <p className="truncate text-xs text-slate-500">@{request.sender?.username || 'username'}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleAcceptRequest(request._id)}
+                            className="rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-black text-white hover:bg-emerald-600"
+                          >
+                            Accept
+                          </button>
+                          <button
+                            onClick={() => handleRejectRequest(request._id)}
+                            className="rounded-xl bg-rose-500 px-3 py-1.5 text-xs font-black text-white hover:bg-rose-600"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {connectionRequests.sent.length > 0 && (
+                  <div>
+                    <h4 className="mb-2 text-sm font-bold text-slate-700">Sent Requests</h4>
+                    {connectionRequests.sent.map((request) => (
+                      <div key={request._id} className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+                        <Avatar user={request.receiver} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-bold text-slate-700">{request.receiver?.displayName || 'User'}</p>
+                          <p className="truncate text-xs text-slate-500">@{request.receiver?.username || 'username'}</p>
+                        </div>
+                        <span className="text-xs text-slate-400">Pending</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {settingsOpen && (
         <Suspense fallback={null}>
           <ProfileSettings firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} onClose={() => setSettingsOpen(false)} />
@@ -1362,6 +1635,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             onMinimize={() => setCallMinimized(true)}
             remoteMediaEpoch={remoteMediaEpoch}
             callTimer={callTimer}
+            remoteParticipants={remoteParticipants}
           />
         </Suspense>
       )}
