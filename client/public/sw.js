@@ -112,15 +112,24 @@ self.addEventListener('fetch', (event) => {
 
 self.addEventListener('push', (event) => {
   const data = event.data?.json?.() || {};
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'AquaChat', {
-      body: data.body || 'You have a new message.',
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
-      tag: data.tag || 'aquachat-notification',
-      data: { url: data.url || '/' }
-    })
-  );
+  const title = data.title || 'AquaChat';
+  const body = data.body || 'You have a new message.';
+  const icon = data.icon || '/icon-192.png';
+  const url = data.url || '/';
+  const isCall = data.type === 'call' || data.callType;
+
+  const options = {
+    body,
+    icon,
+    badge: data.badge || icon,
+    tag: data.tag || `aquachat-notification-${data.chatId || 'general'}`,
+    renotify: true,
+    vibrate: data.vibrate || [200, 100, 200],
+    requireInteraction: isCall,
+    data: { url }
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener('notificationclick', (event) => {

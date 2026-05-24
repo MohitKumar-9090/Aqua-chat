@@ -22,7 +22,7 @@ import { playIncomingRing, stopIncomingRing, unlockCallAudio } from './utils/cal
 import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
-import { registerBackgroundSync, requestNotificationPermission } from './pwa.js';
+import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification } from './pwa.js';
 import { usePwaInstall } from './hooks/usePwaInstall.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import { getCallRuntime } from './utils/callRuntime.js';
@@ -153,6 +153,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callState, setCallState] = useState(null);
+  const [callMinimized, setCallMinimized] = useState(false);
+  const [callTimer, setCallTimer] = useState(0);
   const [remoteMediaEpoch, setRemoteMediaEpoch] = useState(0);
   const [activeCallId, setActiveCallId] = useState(null);
   const [connectingUserId, setConnectingUserId] = useState(null);
@@ -183,10 +185,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const callStateRef = useRef(callState);
   const usersRef = useRef(users);
   const blockStateRef = useRef(blockState);
+  const prevChatsRef = useRef([]);
+  const initialNotificationHandledRef = useRef(false);
   selectedChatRef.current = selectedChat;
   callStateRef.current = callState;
   usersRef.current = users;
   blockStateRef.current = blockState;
+
+  const findDirectChatByPeerId = (peerId) =>
+    chats.find((chat) => chat.type === 'direct' && chat.participantIds?.includes(peerId) && chat.participantIds.includes(profile?._id));
 
   const isBlockedUser = (userId) => {
     if (!userId) return false;
@@ -246,6 +253,104 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
     await refreshStatuses();
   };
+
+  useEffect(() => {
+    if (!firebaseUser?.uid) return undefined;
+    if (Notification.permission !== 'granted') return undefined;
+
+    let mounted = true;
+    registerMessagingToken()
+      .then((token) => {
+        if (!mounted || !token) return;
+        api.saveMessagingToken(token).catch(console.error);
+      })
+      .catch(console.error);
+    return () => {
+      mounted = false;
+    };
+  }, [firebaseUser?.uid, Notification.permission]);
+
+  useEffect(() => {
+    if (!callState?.active || callMinimized) return undefined;
+
+    const handlePopState = () => {
+      if (callStateRef.current?.active && !callMinimized) {
+        setCallMinimized(true);
+        window.history.pushState({ aquachatCall: true }, '');
+      }
+    };
+
+    window.history.pushState({ aquachatCall: true }, '');
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      if (window.history.state?.aquachatCall) {
+        window.history.back();
+      }
+    };
+  }, [callState?.active, callMinimized]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const chatId = params.get('chat');
+    if (!chatId || initialNotificationHandledRef.current) return undefined;
+    const chat = chats.find((item) => item._id === chatId);
+    if (chat) {
+      setSelectedChat(chat);
+      setPanel('chats');
+      initialNotificationHandledRef.current = true;
+    }
+    return undefined;
+  }, [chats]);
+
+  useEffect(() => {
+    if (Notification.permission !== 'granted') return undefined;
+    if (document.visibilityState === 'visible') return undefined;
+
+    const latestChat = chats.find((chat) => {
+      const previous = prevChatsRef.current.find((item) => item._id === chat._id);
+      return (
+        previous &&
+        chat.lastMessage?._id !== previous.lastMessage?._id &&
+        chat.lastMessage?.senderId !== profile._id
+      );
+    });
+
+    if (latestChat) {
+      const message = latestChat.lastMessage;
+      if (message) {
+        void showSystemNotification({
+          title: chatTitle(latestChat, profile),
+          body: message.body || 'New message',
+          icon: message.sender?.photoURL || '/icon-192.png',
+          tag: `chat-${latestChat._id}`,
+          url: `/?chat=${latestChat._id}`
+        });
+      }
+    }
+
+    prevChatsRef.current = chats;
+    return undefined;
+  }, [chats, profile._id]);
+
+  useEffect(() => {
+    if (!callState?.active || !callState?.incoming) return undefined;
+    if (Notification.permission !== 'granted') return undefined;
+    if (document.visibilityState === 'visible') return undefined;
+
+    void showSystemNotification({
+      title: `${callState.caller?.displayName || 'Incoming call'}`,
+      body: `${callState.callType === 'video' ? 'Video' : 'Voice'} call`,
+      icon: callState.caller?.photoURL || '/icon-192.png',
+      tag: `call-${callState.callId}`,
+      url: `/?chat=${callState.chatId || ''}&callId=${callState.callId}`,
+      requireInteraction: true,
+      vibrate: [200, 100, 200, 100, 200]
+    });
+
+    return undefined;
+  }, [callState?.active, callState?.incoming, callState?.callId, callState?.chatId]);
 
   const closeChat = () => {
     setSelectedChat(null);
@@ -455,7 +560,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const handleInstall = async () => {
     const choice = await installApp();
     if (choice?.outcome === 'accepted') {
-      await requestNotificationPermission();
+      const permission = await requestNotificationPermission();
+      if (permission === 'granted') {
+        const token = await registerMessagingToken();
+        if (token) {
+          api.saveMessagingToken(token).catch(console.error);
+        }
+      }
     }
   };
 
@@ -619,6 +730,18 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return uid;
   };
 
+  const markCallConnected = () => {
+    setCallState((current) => {
+      if (!current || current.connectedAt) return current;
+      return {
+        ...current,
+        status: 'active',
+        connectedAt: Date.now(),
+        preparing: false
+      };
+    });
+  };
+
   const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null }) => {
     const calls = await getCallRuntime();
     const uid = await calls.waitForAuthReady();
@@ -627,7 +750,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     try {
       if (isCaller) {
         await calls.createCallRoom({ callId, from: uid, to: remoteUid, callType });
-        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType });
       } else {
         await calls.verifyCallAccess(callId, uid);
       }
@@ -638,6 +760,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           (remoteStream) => {
             remoteStreamRef.current = remoteStream;
             setRemoteMediaEpoch((n) => n + 1);
+            markCallConnected();
           },
           (candidate) => {
             calls.pushIceCandidate(callId, uid, candidate).catch((error) => {
@@ -651,7 +774,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       peerConnectionRef.current = pc;
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') setRemoteMediaEpoch((n) => n + 1);
+        if (pc.connectionState === 'connected') {
+          markCallConnected();
+        }
       };
 
       const remoteCandidates = calls.subscribeIceCandidates(callId, remoteUid, (candidate) => {
@@ -681,6 +806,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         });
         await pc.setLocalDescription(offer);
         await calls.publishCallOffer(callId, offer);
+        await calls.ringCallee({ callId, from: uid, to: remoteUid, callType });
       } else if (remoteOffer) {
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
         await pc.flushRemoteIceCandidates();
@@ -715,6 +841,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return () => retryTimers.forEach(clearTimeout);
   }, [remoteMediaEpoch]);
 
+  useEffect(() => {
+    if (!callState?.active || !callState?.connectedAt) {
+      setCallTimer(0);
+      return undefined;
+    }
+    const updateTimer = () => {
+      setCallTimer(Math.max(0, Math.floor((Date.now() - callState.connectedAt) / 1000)));
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [callState?.active, callState?.connectedAt]);
+
   // Re-attach local stream when CallModal mounts (survives Suspense/rerender)
   useEffect(() => {
     if (!callState?.active) return;
@@ -744,11 +883,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const calls = await getCallRuntime();
     const uid = await calls.waitForAuthReady();
     const callId = `call_${[uid, selectedPeer._id].sort().join('_')}_${Date.now()}`;
+    const activeChatId = selectedChat?._id || findDirectChatByPeerId(selectedPeer._id)?._id;
     setActiveCallId(callId);
+    setCallMinimized(false);
     setCallState({
       active: true,
       incoming: false,
       callId,
+      chatId: activeChatId,
       callType,
       caller: selectedPeer,
       from: uid,
@@ -756,7 +898,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       status: 'ringing',
       muted: false,
       cameraOff: callType === 'voice',
-      speakerOn: true
+      speakerOn: true,
+      startedAt: Date.now(),
+      minimized: false
     });
 
     try {
@@ -771,6 +915,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const answerCall = async () => {
     if (!callState?.callId || !callState?.offer) return;
     stopIncomingRing();
+    setCallMinimized(false);
     // Keep incoming=true during setup so the subscribeIncomingCalls null-handler
     // doesn't nuke callState when Firebase clears userIncoming.
     setCallState((current) => (current ? { ...current, preparing: true } : current));
@@ -788,6 +933,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         isCaller: false,
         remoteOffer: callState.offer
       });
+      setCallState((current) => (current ? { ...current, startedAt: current.startedAt || Date.now() } : current));
     } catch (error) {
       console.error(error);
       toastError(error.message || 'Could not answer call.');
@@ -795,11 +941,39 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
   };
 
+  const recordCallHistory = async (state) => {
+    if (!state) return;
+    const chatId = state.chatId || selectedChatRef.current?._id || findDirectChatByPeerId(state.to || state.from)?._id;
+    if (!chatId) return;
+    const startedAt = state.connectedAt || state.startedAt;
+    const duration = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
+    const callType = state.callType || 'voice';
+    const callStatus = state.incoming && state.status === 'ringing' ? 'missed' : state.status || (duration ? 'completed' : 'missed');
+    const label = `${callType === 'video' ? 'Video' : 'Voice'} call ${callStatus}`;
+
+    try {
+      await api.sendMessage({
+        chatId,
+        type: 'call',
+        body: label + (duration ? ` • ${Math.floor(duration / 60000)}m ${(Math.floor(duration / 1000) % 60).toString().padStart(2, '0')}s` : ''),
+        callType,
+        callStatus,
+        duration
+      });
+    } catch (error) {
+      console.warn('Could not save call history message:', error?.message || error);
+    }
+  };
+
   const endCall = () => {
     stopIncomingRing();
-    const endingCallId = activeCallId || callState?.callId;
-    const from = callState?.from || auth?.currentUser?.uid || profile?._id;
-    const to = callState?.to || selectedPeer?._id;
+    const state = callStateRef.current;
+    if (state) {
+      void recordCallHistory(state);
+    }
+    const endingCallId = activeCallId || state?.callId;
+    const from = state?.from || auth?.currentUser?.uid || profile?._id;
+    const to = state?.to || selectedPeer?._id;
     cleanupCallListeners();
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
@@ -814,6 +988,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
     setActiveCallId(null);
     setCallState(null);
+    setCallMinimized(false);
   };
 
   useEffect(() => {
@@ -850,12 +1025,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const caller =
           usersRef.current.find((user) => user._id === incoming.from) ||
           { _id: incoming.from, displayName: 'Incoming call' };
+        const incomingChat = findDirectChatByPeerId(incoming.from);
         playIncomingRing();
         setActiveCallId(incoming.id);
+        setCallMinimized(false);
         setCallState({
           active: true,
           incoming: true,
           callId: incoming.id,
+          chatId: incomingChat?._id,
           callType: incoming.callType || 'voice',
           caller,
           from: incoming.from,
@@ -864,7 +1042,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           status: incoming.status || 'ringing',
           muted: false,
           cameraOff: (incoming.callType || 'voice') === 'voice',
-          speakerOn: true
+          speakerOn: true,
+          minimized: false
         });
       });
     });
@@ -1083,7 +1262,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           <ProfileSettings firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} onClose={() => setSettingsOpen(false)} />
         </Suspense>
       )}
-      {callState?.active && (
+      {callState?.active && !callMinimized && (
         <Suspense fallback={null}>
           <CallModal
             state={callState}
@@ -1098,9 +1277,28 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             onToggleSpeaker={toggleCallSpeaker}
             onAnswer={answerCall}
             onEnd={endCall}
+            onMinimize={() => setCallMinimized(true)}
             remoteMediaEpoch={remoteMediaEpoch}
+            callTimer={callTimer}
           />
         </Suspense>
+      )}
+      {callState?.active && callMinimized && (
+        <button
+          type="button"
+          onClick={() => setCallMinimized(false)}
+          className="fixed bottom-24 right-4 z-50 flex min-w-[220px] items-center gap-3 rounded-3xl border border-white/80 bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-3 text-left text-white shadow-2xl shadow-cyan-500/20 transition hover:scale-[1.01] sm:bottom-6 sm:right-6"
+        >
+          <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 text-white">
+            {callState.callType === 'video' ? '📹' : '📞'}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate font-black">{callState.caller?.displayName || 'Active call'}</p>
+            <p className="truncate text-xs opacity-90">
+              {callState.incoming ? 'Incoming call' : callState.status === 'ringing' ? 'Ringing…' : 'On call'}
+            </p>
+          </div>
+        </button>
       )}
       {showInstall && (
         <Suspense fallback={null}>

@@ -877,13 +877,50 @@ export const api = {
     });
 
     const url = await getDownloadURL(ref);
-    await updateDoc(doc(firestore, 'users', uid), {
+    const userRef = doc(firestore, 'users', uid);
+    const userData = {
       photoURL: url,
       profilePic: url,
       profilePicture: url,
       updatedAt: serverTimestamp()
-    });
-    return { url, user: await readUser(uid) };
+    };
+
+    try {
+      await updateDoc(userRef, userData);
+    } catch (error) {
+      await setDoc(userRef, userData, { merge: true });
+    }
+
+    const user = await readUser(uid);
+    return {
+      url,
+      user: user || {
+        _id: uid,
+        firebaseUid: uid,
+        displayName: '',
+        photoURL: url,
+        profilePic: url,
+        profilePicture: url
+      }
+    };
+  },
+
+  saveMessagingToken: async (token) => {
+    if (!token) throw new Error('Missing messaging token');
+    const uid = currentUid();
+    const userRef = doc(firestore, 'users', uid);
+    try {
+      await updateDoc(userRef, {
+        fcmTokens: arrayUnion(token),
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      await setDoc(userRef, {
+        fcmTokens: [token],
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    }
+    return { ok: true };
   },
 
   subscribeUser: (uid, handler) => {

@@ -64,6 +64,13 @@ function MessageBubble({
   const deleted = message.deletedForEveryone;
   const longPressTimer = { current: null };
 
+  const formatCallDuration = (ms) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
+
   const startPress = (event) => {
     if (selectionMode || !event.touches?.length) return;
     const point = event.touches[0];
@@ -120,6 +127,11 @@ function MessageBubble({
 
         {deleted ? (
           <p className={`text-sm italic ${mine ? 'text-cyan-50/90' : 'text-slate-500'}`}>This message was deleted</p>
+        ) : message.type === 'call' ? (
+          <div className="mb-2 rounded-2xl border border-cyan-100/80 bg-aqua-50/90 px-4 py-3 text-sm font-semibold text-slate-700">
+            <p>{message.body || `${message.callType === 'video' ? 'Video call' : 'Voice call'} ${message.callStatus || (message.duration ? 'Completed' : 'Missed')}`}</p>
+            {message.duration ? <p className="mt-1 text-xs text-slate-500">Duration: {formatCallDuration(message.duration)}</p> : null}
+          </div>
         ) : (
           <>
             <MediaContent message={message} />

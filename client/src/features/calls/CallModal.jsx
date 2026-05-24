@@ -1,5 +1,5 @@
 import { useLayoutEffect } from 'react';
-import { Mic, MicOff, PhoneOff, Video, VideoOff, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume2, VolumeX } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 
 export default function CallModal({
@@ -15,11 +15,23 @@ export default function CallModal({
   onToggleSpeaker,
   onAnswer,
   onEnd,
-  remoteMediaEpoch = 0
+  onMinimize,
+  remoteMediaEpoch = 0,
+  callTimer = 0
 }) {
   const isVideo = state.callType === 'video';
   const showControls = !state.incoming || state.preparing;
-  const showTopBar = !isVideo || state.preparing || state.incoming || state.status === 'ringing';
+  const showTopBar = !isVideo || state.preparing || state.incoming || state.status === 'ringing' || state.connectedAt;
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+      .toString()
+      .padStart(2, '0');
+    const secs = Math.floor(seconds % 60)
+      .toString()
+      .padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
+  const callTimeLabel = state.connectedAt ? formatDuration(callTimer) : null;
 
   useLayoutEffect(() => {
     const remote = remoteVideoRef.current;
@@ -72,6 +84,8 @@ export default function CallModal({
                 ? 'Incoming call'
                 : state.status === 'ringing'
                 ? 'Ringing…'
+                : callTimeLabel
+                ? `On call • ${callTimeLabel}`
                 : 'Voice call'}
             </p>
             <video ref={remoteVideoRef} autoPlay playsInline className="hidden" />
@@ -81,15 +95,22 @@ export default function CallModal({
 
         {showTopBar && (
           <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
-            <p className="text-center text-sm font-semibold text-cyan-100">
-              {state.preparing
-                ? 'Connecting via secure relay…'
-                : state.incoming
-                ? 'Incoming call'
-                : state.status === 'ringing'
-                ? 'Ringing…'
-                : 'On call'}
-            </p>
+            <div className="space-y-1">
+              <p className="text-center text-sm font-semibold text-cyan-100">
+                {state.preparing
+                  ? 'Connecting via secure relay…'
+                  : state.incoming
+                  ? 'Incoming call'
+                  : state.status === 'ringing'
+                  ? 'Ringing…'
+                  : callTimeLabel
+                  ? `On call • ${callTimeLabel}`
+                  : 'On call'}
+              </p>
+              {callTimeLabel && (
+                <p className="text-center text-xs text-cyan-200">Call duration</p>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -135,6 +156,16 @@ export default function CallModal({
               onToggleSpeaker,
               speakerOn ? 'Speaker off' : 'Speaker on',
               speakerOn ? <Volume2 size={24} /> : <VolumeX size={24} />
+            )}
+            {onMinimize && !state.incoming && !state.preparing && (
+              <button
+                type="button"
+                onClick={onMinimize}
+                title="Minimize call"
+                className="grid h-14 w-14 place-items-center rounded-full bg-white/15 text-white transition duration-200 hover:bg-white/25 sm:h-16 sm:w-16"
+              >
+                <Minimize2 size={24} />
+              </button>
             )}
             <button
               type="button"

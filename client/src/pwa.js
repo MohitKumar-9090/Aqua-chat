@@ -1,3 +1,6 @@
+import { getApp, getApps } from 'firebase/app';
+import { getMessaging, getToken } from 'firebase/messaging';
+
 const isProd = import.meta.env.PROD;
 
 let deferredInstallPrompt = null;
@@ -87,6 +90,56 @@ export const waitForServiceWorker = async () => {
     return await navigator.serviceWorker.ready;
   } catch {
     return null;
+  }
+};
+
+const getFirebaseMessaging = () => {
+  if (!('serviceWorker' in navigator) || !getApps().length) return null;
+  try {
+    return getMessaging(getApp());
+  } catch (error) {
+    console.warn('Firebase messaging initialization failed:', error.message);
+    return null;
+  }
+};
+
+export const registerMessagingToken = async () => {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return null;
+  const registration = await waitForServiceWorker();
+  if (!registration) return null;
+  const messaging = getFirebaseMessaging();
+  if (!messaging) return null;
+  const vapidKey = import.meta.env.VITE_FIREBASE_MESSAGING_VAPID_KEY || import.meta.env.REACT_APP_FIREBASE_MESSAGING_VAPID_KEY;
+  try {
+    return await getToken(messaging, { serviceWorkerRegistration: registration, vapidKey });
+  } catch (error) {
+    console.warn('FCM token registration failed:', error.message);
+    return null;
+  }
+};
+
+export const showSystemNotification = async ({ title, body, icon, tag, url, requireInteraction = false, vibrate = [200, 100, 200] }) => {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const options = {
+    body,
+    icon: icon || '/icon-192.png',
+    badge: icon || '/icon-192.png',
+    tag: tag || 'aquachat-notification',
+    renotify: true,
+    vibrate,
+    requireInteraction,
+    data: { url: url || '/' }
+  };
+
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (registration?.showNotification) {
+      registration.showNotification(title, options);
+      return;
+    }
+    new Notification(title, options);
+  } catch (error) {
+    console.error('Notification display failed:', error.message);
   }
 };
 
