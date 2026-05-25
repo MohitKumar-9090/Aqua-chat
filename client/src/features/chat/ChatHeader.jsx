@@ -24,7 +24,8 @@ function ChatHeader({
   onDownloadTxt,
   onDownloadJson,
   onDeleteGroup,
-  onOpenGroupInfo
+  onOpenGroupInfo,
+  onOpenUserInfo
 }) {
   const menuAnchorRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -63,8 +64,11 @@ function ChatHeader({
         <ArrowLeft size={22} />
       </button>
       <div 
-        onClick={() => chat.type === 'group' && onOpenGroupInfo?.()}
-        className={`flex min-w-0 flex-1 items-center gap-2 sm:gap-3 ${chat.type === 'group' ? 'cursor-pointer select-none' : ''}`}
+        onClick={() => {
+          if (chat.type === 'group') onOpenGroupInfo?.();
+          else onOpenUserInfo?.();
+        }}
+        className={`flex min-w-0 flex-1 items-center gap-2 sm:gap-3 cursor-pointer select-none`}
       >
         <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={callsEnabled && peer?.isOnline} statusRing={peerStatusRing} />
         <div className="min-w-0 flex-1">

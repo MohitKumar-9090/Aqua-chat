@@ -45,7 +45,7 @@ const ProfileSettings = lazy(() => import('./features/settings/ProfileSettings.j
 const CallModal = lazy(() => import('./features/calls/CallModal.jsx'));
 const ChatActionBottomSheet = lazy(() => import('./features/chat/ChatActionBottomSheet.jsx'));
 const GroupInfo = lazy(() => import('./features/chat/GroupInfo.jsx'));
-const FloatingCallBubble = lazy(() => import('./features/calls/FloatingCallBubble.jsx'));
+const UserInfoPanel = lazy(() => import('./features/chat/UserInfoPanel.jsx'));
 
 export default function App() {
   if (initError) {
@@ -149,6 +149,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [statuses, setStatuses] = useState([]);
   const [selectedChat, setSelectedChat] = useState(null);
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
+  const [userInfoOpen, setUserInfoOpen] = useState(false);
   const [activeMenuChat, setActiveMenuChat] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sendEpoch, setSendEpoch] = useState(0);
@@ -179,6 +180,35 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       delete longPressTimersRef.current[chat._id];
     }, 700);
   };
+
+  useEffect(() => {
+    const lockScreenOrientation = async () => {
+      try {
+        if (screen.orientation && typeof screen.orientation.lock === 'function') {
+          await screen.orientation.lock('portrait');
+          console.log('[Screen Orientation] Locked to portrait');
+        }
+      } catch (err) {
+        console.warn('[Screen Orientation] Lock failed or not supported:', err.message);
+      }
+    };
+
+    lockScreenOrientation();
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        lockScreenOrientation();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
+  }, []);
 
   const handleChatTouchEnd = (chat) => {
     if (longPressTimersRef.current[chat._id]) {
@@ -230,17 +260,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const activeMessagesChatRef = useRef(null);
   const seenTimerRef = useRef(null);
   const callStateRef = useRef(callState);
+  const chatsRef = useRef(chats);
   const usersRef = useRef(users);
   const blockStateRef = useRef(blockState);
   const prevChatsRef = useRef([]);
   const initialNotificationHandledRef = useRef(false);
+  chatsRef.current = chats;
   selectedChatRef.current = activeChat;
   callStateRef.current = callState;
   usersRef.current = users;
   blockStateRef.current = blockState;
 
   const findDirectChatByPeerId = (peerId) =>
-    chats.find((chat) => chat.type === 'direct' && chat.participantIds?.includes(peerId) && chat.participantIds.includes(profile?._id));
+    chatsRef.current.find((chat) => chat.type === 'direct' && chat.participantIds?.includes(peerId) && chat.participantIds.includes(profile?._id));
 
   const isBlockedUser = (userId) => {
     if (!userId) return false;
@@ -369,6 +401,80 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       }
     };
   }, [callState?.active, callMinimized]);
+
+  const enterPiP = async () => {
+    try {
+      const video = remoteVideoRef.current;
+      if (document.pictureInPictureEnabled && video && video.readyState >= 1) {
+        if (document.pictureInPictureElement !== video) {
+          await video.requestPictureInPicture();
+          console.log('[PiP] Entered Picture-in-Picture');
+        }
+      }
+    } catch (err) {
+      console.warn('[PiP] requestPictureInPicture failed:', err.message);
+    }
+  };
+
+  const exitPiP = async () => {
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        console.log('[PiP] Exited Picture-in-Picture');
+      }
+    } catch (err) {
+      console.warn('[PiP] exitPictureInPicture failed:', err.message);
+    }
+  };
+
+  // Manage Picture-in-Picture based on call minimization state
+  useEffect(() => {
+    if (callState?.active && callState?.callType === 'video') {
+      if (callMinimized) {
+        const timer = setTimeout(() => {
+          enterPiP();
+        }, 300);
+        return () => clearTimeout(timer);
+      } else {
+        exitPiP();
+      }
+    } else {
+      exitPiP();
+    }
+    return undefined;
+  }, [callMinimized, callState?.active, callState?.callType]);
+
+  // Automatically enter Picture-in-Picture when app goes to background
+  useEffect(() => {
+    const handleVisibilityForPiP = () => {
+      if (callState?.active && callState?.callType === 'video') {
+        if (document.visibilityState === 'hidden') {
+          enterPiP();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityForPiP);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityForPiP);
+    };
+  }, [callState?.active, callState?.callType]);
+
+  // Restore call screen when user clicks "Back to tab" in PiP window
+  useEffect(() => {
+    const video = remoteVideoRef.current;
+    if (!video) return undefined;
+
+    const handleLeavePiP = () => {
+      console.log('[PiP] leavepictureinpicture event fired, restoring call screen');
+      setCallMinimized(false);
+    };
+
+    video.addEventListener('leavepictureinpicture', handleLeavePiP);
+    return () => {
+      video.removeEventListener('leavepictureinpicture', handleLeavePiP);
+    };
+  }, [remoteVideoRef.current, callState?.active]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -558,8 +664,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         lastMsg.status !== 'failed'
       ) {
         const delivered = lastMsg.deliveredTo || [];
-        const seen = lastMsg.seenBy || [];
-        if (!delivered.includes(uid) && !seen.includes(uid)) {
+        // Mark delivered independently of seenBy — delivery != seen
+        if (!delivered.includes(uid)) {
           api.markMessageDelivered(chat._id, lastMsg._id).catch(console.error);
         }
       }
@@ -651,6 +757,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   useEffect(() => {
     setGroupInfoOpen(false);
+    setUserInfoOpen(false);
     if (!selectedChat) {
       setMessages([]);
       setTyping(null);
@@ -1576,7 +1683,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       if (event.data?.type === 'NOTIFICATION_CLICK') {
         const { chatId, callId, action } = event.data;
         if (chatId) {
-          const chat = chats.find((item) => item._id === chatId);
+          const chat = chatsRef.current.find((item) => item._id === chatId);
           if (chat) {
             setSelectedChat(chat);
             setPanel('chats');
@@ -1594,7 +1701,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleSWMessage);
     };
-  }, [chats, answerCall, endCall]);
+  }, [answerCall, endCall]);
 
   // Handle incoming call action from URL query params when app is loaded fresh
   useEffect(() => {
@@ -1730,7 +1837,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         
         const isGroupCall = Array.isArray(incoming.to) || (incoming.participants && Object.keys(incoming.participants || {}).length > 2);
         const incomingChat = isGroupCall
-          ? chats.find((chat) => chat.type === 'group' && incoming.id.startsWith(`group_call_${chat._id}`))
+          ? chatsRef.current.find((chat) => chat.type === 'group' && incoming.id.startsWith(`group_call_${chat._id}`))
           : findDirectChatByPeerId(incoming.from);
 
         // Initialize remote participants for incoming group calls
@@ -1982,6 +2089,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     onBulkDeleteForMe={api.deleteMessagesForMe}
                     onDeleteGroup={() => handleDeleteGroup(activeChat._id)}
                     onOpenGroupInfo={() => setGroupInfoOpen(true)}
+                    onOpenUserInfo={() => setUserInfoOpen(true)}
                   />
                 </Suspense>
                 {activeChat.type === 'group' && <GroupStrip chat={activeChat} me={profile} users={users} onRefresh={refresh} />}
@@ -2030,6 +2138,20 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     onDeleteGroup={async () => {
                       handleDeleteGroup(String(activeChat._id || '').trim());
                     }}
+                  />
+                </Suspense>
+              )}
+              {userInfoOpen && activeChat?.type === 'direct' && selectedPeer && (
+                <Suspense fallback={null}>
+                  <UserInfoPanel
+                    peer={selectedPeer}
+                    chat={activeChat}
+                    me={profile}
+                    blockState={blockState}
+                    onClose={() => setUserInfoOpen(false)}
+                    onAudio={() => startCall('voice')}
+                    onVideo={() => startCall('video')}
+                    onToggleBlock={() => {}}
                   />
                 </Suspense>
               )}
@@ -2129,7 +2251,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </Suspense>
       )}
       </main>
-      {callState?.active && !callMinimized && (
+      {callState?.active && (
         <Suspense fallback={null}>
           <CallModal
             state={callState}
@@ -2145,23 +2267,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             onAnswer={answerCall}
             onEnd={endCall}
             onMinimize={() => setCallMinimized(true)}
+            minimized={callMinimized}
+            onRestore={() => setCallMinimized(false)}
             remoteMediaEpoch={remoteMediaEpoch}
             callTimer={callTimer}
             remoteParticipants={remoteParticipants}
             currentUid={profile?._id || firebaseUser?.uid}
             onAdminControl={handleAdminControl}
-          />
-        </Suspense>
-      )}
-      {callState?.active && callMinimized && (
-        <Suspense fallback={null}>
-          <FloatingCallBubble
-            callState={callState}
-            localVideoRef={localVideoRef}
-            remoteVideoRef={remoteVideoRef}
-            callTimer={callTimer}
-            remoteParticipants={remoteParticipants}
-            onRestore={() => setCallMinimized(false)}
           />
         </Suspense>
       )}
@@ -2241,31 +2353,37 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             const peer = directPeer(chat, profile);
             const peerId = peer?._id ? String(peer._id).trim() : '';
             if (peerId) {
+              // Optimistic removal — update UI before server round-trip
+              setChats((current) => current.filter((c) => c._id !== chat._id));
+              if (selectedChat?._id === chat._id) {
+                setSelectedChat(null);
+              }
               try {
                 await api.disconnectUser(peerId);
                 toastSuccess('Disconnected successfully');
-                setChats((current) => current.filter((c) => c._id !== chat._id));
-                if (selectedChat?._id === chat._id) {
-                  setSelectedChat(null);
-                }
               } catch (err) {
                 console.error('[Disconnect Error] Peer ID:', peerId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
                 toastError(err.message || 'Could not disconnect user');
+                // Revert on failure
+                refresh();
               }
             }
           }}
           onDeleteChat={async (chat) => {
             const chatId = String(chat._id || '').trim();
+            // Optimistic removal — update UI before server round-trip
+            setChats((current) => current.filter((c) => c._id !== chatId));
+            if (selectedChat?._id === chatId) {
+              setSelectedChat(null);
+            }
             try {
               await api.deletePersonalChat(chatId);
               toastSuccess('Chat deleted successfully');
-              setChats((current) => current.filter((c) => c._id !== chatId));
-              if (selectedChat?._id === chatId) {
-                setSelectedChat(null);
-              }
             } catch (err) {
               console.error('[Delete Chat Error] Chat ID:', chatId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
               toastError(err.message || 'Could not delete chat');
+              // Revert on failure
+              refresh();
             }
           }}
           onExitGroup={async (chat) => {

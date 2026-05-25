@@ -2,7 +2,7 @@
  * Lazy loading and performance optimization utilities
  */
 
-import { lazy, Suspense } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useMemo } from 'react';
 
 /**
  * Safely lazy load a React component with loading fallback
@@ -50,9 +50,9 @@ export const LazyImage = ({ src, alt, className, loading = 'lazy', ...props }) =
  * Intersection Observer for lazy loading content
  */
 export const useIntersectionObserver = (ref, options = {}) => {
-  const [isVisible, setIsVisible] = React.useState(false);
+  const [isVisible, setIsVisible] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) {
         setIsVisible(true);
@@ -77,9 +77,9 @@ export const useIntersectionObserver = (ref, options = {}) => {
  * Debounce hook for performance
  */
 export const useDebounce = (value, delay = 500) => {
-  const [debouncedValue, setDebouncedValue] = React.useState(value);
+  const [debouncedValue, setDebouncedValue] = useState(value);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedValue(value);
     }, delay);
@@ -94,7 +94,7 @@ export const useDebounce = (value, delay = 500) => {
  * Request idle callback hook for non-urgent work
  */
 export const useIdleCallback = (callback, options = {}) => {
-  React.useEffect(() => {
+  useEffect(() => {
     const id = requestIdleCallback(callback, options);
     return () => cancelIdleCallback(id);
   }, [callback, options]);
@@ -104,5 +104,5 @@ export const useIdleCallback = (callback, options = {}) => {
  * Memo hook for preventing unnecessary re-renders of list items
  */
 export const useMemoList = (items, deps = []) => {
-  return React.useMemo(() => items, [...deps, items.length]);
+  return useMemo(() => items, [...deps, items.length]);
 };

@@ -19,7 +19,8 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytes, uploadBytesResumable } from 'firebase/storage';
-import { compressProfilePhoto, prepareUploadFile } from './utils/messageMedia.js';
+import { compressProfilePhoto, prepareUploadFile, detectMessageType } from './utils/messageMedia.js';
+import { uploadToCloudinary, uploadImageToCloudinary } from './services/cloudinary.js';
 import { pruneStatusViewedLocal } from './utils/statusViewed.js';
 import { onAuthStateChanged } from 'firebase/auth';
 import { onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
@@ -480,6 +481,9 @@ export const messagesListEqual = (a, b) => {
     if (x.body !== y.body || x.mediaUrl !== y.mediaUrl || x.type !== y.type) return false;
     if (x.fileName !== y.fileName || x.deletedForEveryone !== y.deletedForEveryone) return false;
     if ((x.replyTo?.messageId || '') !== (y.replyTo?.messageId || '')) return false;
+    // Compare delivery status so tick updates propagate correctly
+    if ((x.seenBy?.length || 0) !== (y.seenBy?.length || 0)) return false;
+    if ((x.deliveredTo?.length || 0) !== (y.deliveredTo?.length || 0)) return false;
   }
   return true;
 };
@@ -567,12 +571,16 @@ export const subscribeMessages = (chatId, handler) => {
 
 const matchesPendingMessage = (pending, server) => {
   if (server.senderId !== pending.senderId || server.type !== pending.type) return false;
-  if (Math.abs((server.clientCreatedAt || 0) - (pending.clientCreatedAt || 0)) >= 120000) return false;
+  // Widen time tolerance to 300s for slow networks / Cloudinary upload latency
+  if (Math.abs((server.clientCreatedAt || 0) - (pending.clientCreatedAt || 0)) >= 300000) return false;
   if (pending.type === 'text') return (server.body || '') === (pending.body || '');
   const bodyMatch = (server.body || '') === (pending.body || '');
+  // Relaxed media matching: if senderId + type + time match and bodies match,
+  // accept even if mediaUrl differs (optimistic has local blob, server has Cloudinary URL)
   const mediaMatch =
     (server.mediaUrl || '') === (pending.mediaUrl || '') ||
-    (!pending.mediaUrl && Boolean(server.mediaUrl));
+    (!pending.mediaUrl && Boolean(server.mediaUrl)) ||
+    (pending.mediaUrl?.startsWith('blob:') && Boolean(server.mediaUrl));
   return bodyMatch && mediaMatch;
 };
 
@@ -584,7 +592,19 @@ export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
   const claimedPending = new Set();
   let hasChanges = false;
 
+  // Build a quick lookup: localKey → pending message for explicit dedup
+  const pendingByLocalKey = new Map();
+  pending.forEach((item) => pendingByLocalKey.set(item.localKey || item._id, item));
+
   serverMessages.forEach((server) => {
+    // Explicit dedup: if server message was reconciled and has a localKey matching a pending message
+    const explicitMatch = server.localKey && pendingByLocalKey.has(server.localKey) && !claimedPending.has(server.localKey);
+    if (explicitMatch) {
+      claimedPending.add(server.localKey);
+      merged.set(server._id, { ...server, pending: false });
+      return;
+    }
+    // Fuzzy matching for messages not yet reconciled
     const match = pending.find((item) => !claimedPending.has(item._id) && matchesPendingMessage(item, server));
     if (match) {
       claimedPending.add(match._id);
@@ -614,7 +634,8 @@ export const mergeWithPendingMessages = (serverMessages, currentMessages) => {
 
 /** Replace optimistic message in-place without dropping the rest of the thread. */
 export const reconcileSentMessage = (current, tempId, serverMessage) => {
-  const filtered = current.filter((item) => item._id !== tempId);
+  // Also remove any message with localKey === tempId to prevent duplicates from prior snapshot merges
+  const filtered = current.filter((item) => item._id !== tempId && item.localKey !== tempId);
   const serverIdx = filtered.findIndex((item) => item._id === serverMessage._id);
   const merged = { ...serverMessage, localKey: tempId, pending: false };
   
@@ -738,7 +759,10 @@ export const api = {
       ...updates,
       searchableKeywords: buildKeywords(updates)
     });
-    return { user: await readUser(uid) };
+    // Return optimistic merged data to avoid stale Firestore reads
+    const merged = presentUser(uid, { ...current, ...updates });
+    userCache.set(uid, merged);
+    return { user: merged };
   },
 
   users: async (search = '') => {
@@ -927,14 +951,44 @@ export const api = {
   },
 
   removeMember: async (chatId, userId) => {
+    const uid = currentUid();
     const trimmedId = String(userId || '').trim();
-    await updateDoc(doc(firestore, 'chats', chatId), { participantIds: arrayRemove(trimmedId), updatedAt: serverTimestamp() });
-    return { chat: await chatDocToObject(await getDoc(doc(firestore, 'chats', chatId))) };
+    const chatRef = doc(firestore, 'chats', chatId);
+    // Self-removal (exit group) is always allowed; removing others requires admin
+    if (trimmedId !== uid) {
+      const chatSnap = await getDoc(chatRef);
+      if (!chatSnap.exists()) throw new Error('Group not found.');
+      const chatData = chatSnap.data();
+      const normalizedUid = String(uid).trim();
+      const isCreator = String(chatData.createdBy || '').trim() === normalizedUid;
+      const adminIds = Array.isArray(chatData.adminIds) ? chatData.adminIds.map(id => String(id || '').trim()) : [];
+      if (!isCreator && !adminIds.includes(normalizedUid)) {
+        throw new Error('Only admins can remove members.');
+      }
+    }
+    // Remove from both participantIds and adminIds (if they were an admin)
+    await updateDoc(chatRef, {
+      participantIds: arrayRemove(trimmedId),
+      adminIds: arrayRemove(trimmedId),
+      updatedAt: serverTimestamp()
+    });
+    return { chat: await chatDocToObject(await getDoc(chatRef)) };
   },
 
   makeAdmin: async (chatId, userId) => {
+    const uid = currentUid();
     const trimmedId = String(userId || '').trim();
     const chatRef = doc(firestore, 'chats', chatId);
+    // Verify caller is creator or existing admin
+    const chatSnap = await getDoc(chatRef);
+    if (!chatSnap.exists()) throw new Error('Group not found.');
+    const chatData = chatSnap.data();
+    const normalizedUid = String(uid).trim();
+    const isCreator = String(chatData.createdBy || '').trim() === normalizedUid;
+    const adminIds = Array.isArray(chatData.adminIds) ? chatData.adminIds.map(id => String(id || '').trim()) : [];
+    if (!isCreator && !adminIds.includes(normalizedUid)) {
+      throw new Error('Only admins can promote members.');
+    }
     await updateDoc(chatRef, { adminIds: arrayUnion(trimmedId), updatedAt: serverTimestamp() });
     return { chat: await chatDocToObject(await getDoc(chatRef)) };
   },
@@ -1094,43 +1148,55 @@ export const api = {
   upload: async (file, { onProgress } = {}) => {
     const uid = currentUid();
     const prepared = await prepareUploadFile(file);
-    const path = `uploads/${uid}/${Date.now()}-${prepared.name}`;
-    const ref = storageRef(storage, path);
-    await uploadFileWithTimeout(ref, prepared, { onProgress });
+    const msgType = detectMessageType(prepared);
+    const resourceType = msgType === 'image' ? 'image' : msgType === 'video' ? 'video' : 'auto';
+
+    const result = await uploadToCloudinary(prepared, {
+      folder: `aquachat/uploads/${uid}`,
+      resourceType,
+      onProgress
+    });
 
     return {
-      url: await getDownloadURL(ref),
-      publicId: path,
-      storagePath: path,
-      resourceType: prepared.type.startsWith('video/') ? 'video' : prepared.type.startsWith('audio/') ? 'audio' : prepared.type.startsWith('image/') ? 'image' : 'file',
+      url: result.secureUrl,
+      publicId: result.publicId,
+      storagePath: result.publicId,
+      resourceType: result.resourceType || resourceType,
       fileName: prepared.name,
-      fileSize: prepared.size,
+      fileSize: result.bytes || prepared.size,
       mimeType: prepared.type || ''
     };
   },
 
   uploadStatusMedia: async (file, { onProgress } = {}) => {
     const uid = currentUid();
-    const safeName = (file.name || 'media').replace(/[^\w.-]+/g, '_');
-    const path = `statuses/${uid}/${Date.now()}-${safeName}`;
-    const ref = storageRef(storage, path);
-    await uploadFileWithTimeout(ref, file, { onProgress });
+    // Compress status images (previously uploaded raw)
+    const prepared = await prepareUploadFile(file);
+    const resourceType = prepared.type?.startsWith('video/') ? 'video' : 'image';
+
+    const result = await uploadToCloudinary(prepared, {
+      folder: `aquachat/statuses/${uid}`,
+      resourceType,
+      onProgress
+    });
 
     return {
-      url: await getDownloadURL(ref),
-      storagePath: path,
-      resourceType: file.type?.startsWith('video/') ? 'video' : 'image'
+      url: result.secureUrl,
+      storagePath: result.publicId,
+      resourceType: result.resourceType || resourceType
     };
   },
 
   uploadProfilePhoto: async (file, { onProgress } = {}) => {
     const uid = currentUid();
     const prepared = await compressProfilePhoto(file);
-    const path = `profiles/${uid}/avatar-${Date.now()}.jpg`;
-    const ref = storageRef(storage, path);
-    await uploadFileWithTimeout(ref, prepared, { onProgress });
 
-    const url = await getDownloadURL(ref);
+    const result = await uploadImageToCloudinary(prepared, {
+      folder: `aquachat/profiles/${uid}`,
+      onProgress
+    });
+
+    const url = result.secureUrl;
 
     // Update Firestore immediately — don't await readUser afterwards
     const userRef = doc(firestore, 'users', uid);
@@ -1148,6 +1214,9 @@ export const api = {
 
     // Start the Firestore write but don't block the return
     await updatePromise;
+
+    // Bust userCache so other components pick up the new photo URL
+    userCache.delete(uid);
 
     return {
       url,
@@ -1473,6 +1542,26 @@ export const api = {
     return {
       chat: { _id: chatId, ...chatSnap.data() },
       messages: snap.docs.map((docSnap) => mapMessageDoc(docSnap, chatId)).filter((m) => !m.deletedFor?.includes(uid))
+    };
+  },
+
+  getSharedMedia: async (chatId) => {
+    const uid = currentUid();
+    const snap = await getDocs(
+      query(
+        collection(firestore, 'chats', chatId, 'messages'),
+        orderBy('clientCreatedAt', 'desc'),
+        limit(200)
+      )
+    );
+    const all = snap.docs
+      .map((d) => mapMessageDoc(d, chatId))
+      .filter((m) => !m.deletedFor?.includes(uid) && !m.deletedForEveryone);
+
+    return {
+      media: all.filter((m) => (m.type === 'image' || m.type === 'video') && m.mediaUrl),
+      links: all.filter((m) => m.type === 'text' && m.body && /https?:\/\/\S+/i.test(m.body)),
+      docs: all.filter((m) => m.type === 'file' && m.mediaUrl)
     };
   }
 };

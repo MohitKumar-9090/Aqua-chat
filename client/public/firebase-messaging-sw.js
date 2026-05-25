@@ -51,15 +51,19 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys()
-      .then((keys) =>
-        Promise.all(
-          keys
-            .filter((key) => key !== CACHE_VERSION && key.startsWith('aquachat-'))
-            .map((key) => caches.delete(key))
-        )
-      )
-      .then(() => self.clients.claim())
+    Promise.all([
+      // Enable navigation preload for faster page loads after background
+      self.registration.navigationPreload?.enable?.().catch(() => {}),
+      // Purge old caches
+      caches.keys()
+        .then((keys) =>
+          Promise.all(
+            keys
+              .filter((key) => key !== CACHE_VERSION && key.startsWith('aquachat-'))
+              .map((key) => caches.delete(key))
+          )
+        ),
+    ]).then(() => self.clients.claim())
   );
 });
 

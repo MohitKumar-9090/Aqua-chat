@@ -13,6 +13,8 @@ import { forceRtdbOnline } from '../firebase.js';
  *
  * 3. focus event → Same as visibilitychange for desktop tab switching.
  *
+ * 4. pageshow (persisted) → BFCache restoration — force reconnect + refresh.
+ *
  * The hook is intentionally lightweight — it doesn't resubscribe listeners
  * (Firestore persistence handles that). It only kicks the RTDB socket.
  */
@@ -24,7 +26,7 @@ export function useBackgroundResume(onResume) {
   const backgroundAtRef = useRef(null);
 
   useEffect(() => {
-    const STALE_THRESHOLD_MS = 3_000; // 3 seconds — if backgrounded longer, refresh
+    const STALE_THRESHOLD_MS = 1_500; // 1.5 seconds — trigger resume sooner after backgrounding
 
     const handleVisibility = () => {
       if (document.visibilityState === 'hidden') {
@@ -57,14 +59,24 @@ export function useBackgroundResume(onResume) {
       forceRtdbOnline();
     };
 
+    // BFCache restoration — the page was stored in memory and restored
+    const handlePageShow = (event) => {
+      if (event.persisted) {
+        forceRtdbOnline();
+        onResumeRef.current?.();
+      }
+    };
+
     document.addEventListener('visibilitychange', handleVisibility);
     window.addEventListener('online', handleOnline);
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('pageshow', handlePageShow);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('pageshow', handlePageShow);
     };
   }, []);
 }

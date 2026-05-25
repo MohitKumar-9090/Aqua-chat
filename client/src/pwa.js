@@ -84,6 +84,23 @@ export const registerServiceWorker = () => {
       .register(swUrl, { scope: '/', updateViaCache: 'none' })
       .then((registration) => {
         registration.update().catch(() => {});
+
+        // Auto-activate waiting service worker for instant updates
+        const handleStateChange = () => {
+          if (registration.waiting) {
+            registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+          }
+        };
+        if (registration.waiting) {
+          registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          if (newWorker) {
+            newWorker.addEventListener('statechange', handleStateChange);
+          }
+        });
+
         return registration;
       })
       .catch((error) => {
@@ -215,7 +232,7 @@ export const startSwKeepalive = () => {
   if (keepaliveInterval || !('serviceWorker' in navigator)) return;
   keepaliveInterval = setInterval(() => {
     navigator.serviceWorker.controller?.postMessage({ type: 'KEEPALIVE' });
-  }, 20_000); // Every 20 seconds
+  }, 15_000); // Every 15 seconds (more aggressive for Android)
 };
 
 export const stopSwKeepalive = () => {

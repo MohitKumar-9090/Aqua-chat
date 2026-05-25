@@ -27,7 +27,8 @@ export default function ChatPanel({
   onDeleteForEveryone,
   onBulkDeleteForMe,
   onDeleteGroup,
-  onOpenGroupInfo
+  onOpenGroupInfo,
+  onOpenUserInfo
 }) {
   const meId = me._id || me.uid;
   const peer = useMemo(() => directPeer(chat, me), [chat, me]);
@@ -175,6 +176,7 @@ export default function ChatPanel({
           onDownloadJson={() => handleDownload('json')}
           onDeleteGroup={onDeleteGroup}
           onOpenGroupInfo={onOpenGroupInfo}
+          onOpenUserInfo={onOpenUserInfo}
         />
       )}
 

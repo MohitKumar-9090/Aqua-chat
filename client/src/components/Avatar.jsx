@@ -1,4 +1,7 @@
 import { memo } from 'react';
+import { optimizeCloudinaryUrl } from '../services/cloudinary.js';
+
+const avatarWidths = { sm: 36, md: 44, lg: 56, xl: 80 };
 
 function Avatar({ user, name, image, size = 'md', online = false, statusRing = false, className = '' }) {
   const sizes = {
@@ -14,7 +17,8 @@ function Avatar({ user, name, image, size = 'md', online = false, statusRing = f
     xl: 'h-4 w-4'
   };
   const label = name || user?.displayName || user?.email || user?.phoneNumber || 'A';
-  const src = image || user?.photoURL || user?.profilePic;
+  const rawSrc = image || user?.photoURL || user?.profilePic;
+  const src = rawSrc ? optimizeCloudinaryUrl(rawSrc, { width: avatarWidths[size] || 44, quality: 'auto', format: 'auto', crop: 'fill' }) : '';
 
   const face = (
     <div

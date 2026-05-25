@@ -76,19 +76,24 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
       return;
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mediaRecorder = new MediaRecorder(stream);
-    const chunks = [];
-    mediaRecorder.ondataavailable = (event) => chunks.push(event.data);
-    mediaRecorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
-      stream.getTracks().forEach((track) => track.stop());
-      setRecorder(emptyRecorder);
-      await uploadFile(file);
-    };
-    mediaRecorder.start();
-    setRecorder({ recording: true, stream, mediaRecorder, chunks });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      const chunks = [];
+      mediaRecorder.ondataavailable = (event) => chunks.push(event.data);
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
+        stream.getTracks().forEach((track) => track.stop());
+        setRecorder(emptyRecorder);
+        await uploadFile(file);
+      };
+      mediaRecorder.start();
+      setRecorder({ recording: true, stream, mediaRecorder, chunks });
+    } catch (err) {
+      console.error('[Voice Recorder] getUserMedia failed:', err);
+      toastError(err.message || 'Microphone access denied or not supported.');
+    }
   };
 
   return (

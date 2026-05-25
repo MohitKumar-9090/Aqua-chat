@@ -1,8 +1,9 @@
-import { memo, useState } from 'react';
+import { memo, useState, useRef } from 'react';
 import { Check, CheckCheck, FileText, Loader2 } from 'lucide-react';
 import { formatTime } from '../../utils/chat.js';
 import { highlightText } from '../../utils/highlightText.jsx';
 import { formatFileSize } from '../../utils/messageMedia.js';
+import { optimizeCloudinaryUrl } from '../../services/cloudinary.js';
 
 function LazyImage({ src, alt, className }) {
   const [loaded, setLoaded] = useState(false);
@@ -25,10 +26,12 @@ function MediaContent({ message }) {
   if (message.deletedForEveryone) return null;
 
   if (message.type === 'image' && message.mediaUrl) {
-    return <LazyImage src={message.mediaUrl} alt="" className="mb-2 max-h-72 w-full rounded-2xl object-cover" />;
+    const optimizedSrc = optimizeCloudinaryUrl(message.mediaUrl, { width: 640, quality: 'auto', format: 'auto' });
+    return <LazyImage src={optimizedSrc} alt="" className="mb-2 max-h-72 w-full rounded-2xl object-cover" />;
   }
   if (message.type === 'video' && message.mediaUrl) {
-    return <video src={message.mediaUrl} controls preload="metadata" playsInline className="mb-2 max-h-72 w-full rounded-2xl bg-black/10" />;
+    const optimizedSrc = optimizeCloudinaryUrl(message.mediaUrl, { quality: 'auto', format: 'auto' });
+    return <video src={optimizedSrc} controls preload="metadata" playsInline className="mb-2 max-h-72 w-full rounded-2xl bg-black/10" />;
   }
   if ((message.type === 'voice' || message.type === 'audio') && message.mediaUrl) {
     return <audio src={message.mediaUrl} controls preload="metadata" className="mb-2 w-full min-w-[200px] max-w-sm" />;
@@ -62,7 +65,7 @@ function MessageBubble({
   onLongPress
 }) {
   const deleted = message.deletedForEveryone;
-  const longPressTimer = { current: null };
+  const longPressTimer = useRef(null);
 
   const formatCallDuration = (ms) => {
     const totalSeconds = Math.floor(ms / 1000);
