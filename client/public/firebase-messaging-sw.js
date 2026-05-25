@@ -194,7 +194,24 @@ self.addEventListener('push', (event) => {
     payload = { body: event.data.text() || 'You have a new message.' };
   }
 
-  event.waitUntil(handlePushNotification(payload));
+  // Check if app is visible in foreground — skip notification if so (App.jsx handles it)
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      const hasFocusedClient = windowClients.some((client) => {
+        return client.visibilityState === 'visible' && new URL(client.url).origin === self.location.origin;
+      });
+      if (hasFocusedClient) {
+        // Forward to focused client for in-app handling instead of system notification
+        windowClients.forEach((client) => {
+          if (client.visibilityState === 'visible') {
+            client.postMessage({ type: 'PUSH_FOREGROUND', payload });
+          }
+        });
+        return;
+      }
+      return handlePushNotification(payload);
+    })
+  );
 });
 
 // Configure Firebase Background Message Handler for FCM compatibility
@@ -253,11 +270,22 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
+  // Keepalive ping from app to prevent Android from killing the SW
+  if (event.data?.type === 'KEEPALIVE') {
+    event.source?.postMessage?.({ type: 'KEEPALIVE_ACK' });
+  }
 });
 
 // 6. Background Sync (keep Android SW active)
 self.addEventListener('sync', (event) => {
   if (event.tag === 'aquachat-background-sync') {
+    event.waitUntil(Promise.resolve());
+  }
+});
+
+// 7. Periodic background sync for Android PWA keepalive
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'aquachat-keepalive') {
     event.waitUntil(Promise.resolve());
   }
 });

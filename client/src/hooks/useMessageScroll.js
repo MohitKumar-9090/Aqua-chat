@@ -78,7 +78,7 @@ export function useMessageScroll(messages, chatKey, sendEpoch = 0) {
     if (!chatKey) return;
     prevRef.current = { signature: '', sendEpoch: 0 };
     layoutRef.current = null;
-    requestAnimationFrame(() => scrollToBottom('auto'));
+    requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom('auto')));
   }, [chatKey]);
 
   return { containerRef, bottomRef, scrollToBottom, isNearBottom: () => isNearBottom(containerRef.current) };

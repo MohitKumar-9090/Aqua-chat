@@ -143,8 +143,9 @@ function MessageBubble({
 
         <div className={`mt-2 flex items-center justify-end gap-1.5 text-xs ${mine ? 'text-cyan-50' : 'text-slate-400'}`}>
           {message.pending && <Loader2 size={12} className="animate-spin" />}
+          {message.status === 'failed' && <span className="font-semibold text-rose-300">Failed</span>}
           {formatTime(message.createdAt)}
-          {mine && !message.pending && <CheckCheck size={13} className={message.status === 'seen' ? 'text-cyan-100' : 'text-cyan-200'} />}
+          {mine && !message.pending && message.status !== 'failed' && <CheckCheck size={13} className={message.status === 'seen' ? 'text-cyan-100' : 'text-cyan-200'} />}
         </div>
       </div>
     </div>

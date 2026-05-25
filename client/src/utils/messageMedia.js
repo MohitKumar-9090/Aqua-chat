@@ -48,4 +48,4 @@ export const prepareUploadFile = async (file) => {
   return file;
 };
 
-export const compressProfilePhoto = (file) => compressImageFile(file, { maxWidth: 512, quality: 0.85 });
+export const compressProfilePhoto = (file) => compressImageFile(file, { maxWidth: 512, quality: 0.78 });

@@ -51,7 +51,8 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
       const { user } = await api.uploadProfilePhoto(file, {
         onProgress: setUploadProgress
       });
-      setProfile(user);
+      // Merge with existing profile to preserve displayName, username, bio
+      setProfile((prev) => ({ ...prev, ...user }));
       setForm((current) => ({ ...current, photoURL: user.photoURL || '' }));
       setMessage('Profile picture updated');
     } catch (error) {

@@ -192,7 +192,37 @@ export const registerBackgroundSync = async () => {
   const registration = await navigator.serviceWorker.ready;
   if (!('sync' in registration)) return false;
   await registration.sync.register('aquachat-background-sync');
+
+  // Register periodic background sync for Android PWA keepalive (if supported)
+  if ('periodicSync' in registration) {
+    try {
+      await registration.periodicSync.register('aquachat-keepalive', {
+        minInterval: 12 * 60 * 60 * 1000 // 12 hours
+      });
+    } catch {
+      // periodicSync requires user engagement threshold — silently skip
+    }
+  }
   return true;
+};
+
+/**
+ * Periodically ping the service worker to keep it alive on Android.
+ * Android Chrome aggressively kills idle SWs after ~30s, breaking push delivery.
+ */
+let keepaliveInterval = null;
+export const startSwKeepalive = () => {
+  if (keepaliveInterval || !('serviceWorker' in navigator)) return;
+  keepaliveInterval = setInterval(() => {
+    navigator.serviceWorker.controller?.postMessage({ type: 'KEEPALIVE' });
+  }, 20_000); // Every 20 seconds
+};
+
+export const stopSwKeepalive = () => {
+  if (keepaliveInterval) {
+    clearInterval(keepaliveInterval);
+    keepaliveInterval = null;
+  }
 };
 
 export const getInstallInstructions = () => {

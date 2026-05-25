@@ -22,13 +22,14 @@ import { playIncomingRing, stopIncomingRing, unlockCallAudio } from './utils/cal
 import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
-import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage } from './pwa.js';
+import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage, startSwKeepalive } from './pwa.js';
 import { usePwaInstall } from './hooks/usePwaInstall.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import { getCallRuntime } from './utils/callRuntime.js';
 import { getCallMediaStream } from './utils/media.js';
 import { scheduleIdle } from './utils/scheduleIdle.js';
 import { auth } from './firebase.js';
+import { useBackgroundResume } from './hooks/useBackgroundResume.js';
 import { chatImage, chatTitle, directPeer, formatTime, statusText } from './utils/chat.js';
 import { buildStatusContactIds, filterStatusesForContacts, userHasUnviewedStatus } from './utils/statusHelpers.js';
 import EmptyState from './features/chat/EmptyState.jsx';
@@ -155,6 +156,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [callState, setCallState] = useState(null);
   const [callMinimized, setCallMinimized] = useState(false);
   const [deleteConfirmGroupId, setDeleteConfirmGroupId] = useState(null);
+  const [notifPermission, setNotifPermission] = useState(() => ('Notification' in window ? Notification.permission : 'unsupported'));
 
   const longPressTimersRef = useRef({});
 
@@ -302,6 +304,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return () => unsubscribe?.();
   }, []);
 
+  // Eagerly pre-load call module and prefetch ICE servers to eliminate cold-start delay
+  useEffect(() => {
+    getCallRuntime().then((calls) => {
+      calls.prefetchIceServers?.();
+    }).catch(() => {});
+  }, []);
+
   const refresh = async () => {
     if (panel === 'people' || query.trim()) {
       await loadUsers(query);
@@ -311,7 +320,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   useEffect(() => {
     if (!firebaseUser?.uid) return undefined;
-    if (Notification.permission !== 'granted') return undefined;
+    if (notifPermission !== 'granted') return undefined;
 
     let mounted = true;
     registerMessagingToken()
@@ -323,7 +332,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return () => {
       mounted = false;
     };
-  }, [firebaseUser?.uid, Notification.permission]);
+  }, [firebaseUser?.uid, notifPermission]);
 
   useEffect(() => {
     if (!callState?.active || callMinimized) return undefined;
@@ -360,11 +369,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [chats]);
 
   useEffect(() => {
-    if (Notification.permission !== 'granted') return undefined;
+    // Always keep prevChatsRef in sync so it doesn't go stale when the tab is visible
+    const prevChats = prevChatsRef.current;
+    prevChatsRef.current = chats;
+
+    if (notifPermission !== 'granted') return undefined;
     if (document.visibilityState === 'visible') return undefined;
 
     const latestChat = chats.find((chat) => {
-      const previous = prevChatsRef.current.find((item) => item._id === chat._id);
+      const previous = prevChats.find((item) => item._id === chat._id);
       return (
         previous &&
         chat.lastMessage?._id !== previous.lastMessage?._id &&
@@ -385,13 +398,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       }
     }
 
-    prevChatsRef.current = chats;
     return undefined;
-  }, [chats, profile._id]);
+  }, [chats, profile._id, notifPermission]);
 
   useEffect(() => {
     if (!callState?.active || !callState?.incoming) return undefined;
-    if (Notification.permission !== 'granted') return undefined;
+    if (notifPermission !== 'granted') return undefined;
     if (document.visibilityState === 'visible') return undefined;
 
     void showSystemNotification({
@@ -443,7 +455,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       const title = notification.title || data.senderName || data.title || 'AquaChat';
       const body = notification.body || data.messagePreview || data.body || 'You have a new message.';
       const isCall = data.type === 'call' || data.callType;
-      
+      const messageChatId = data.chatId || '';
+
+      // Skip notification if the user is actively viewing this chat
+      if (document.visibilityState === 'visible' && messageChatId && selectedChatRef.current?._id === messageChatId && !isCall) {
+        return;
+      }
+
       if (isCall) {
         playIncomingRing();
       }
@@ -558,6 +576,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     document.addEventListener('pointerdown', unlockAudio, { once: true, passive: true });
     document.addEventListener('keydown', unlockAudio, { once: true });
     registerBackgroundSync().catch(() => {});
+    startSwKeepalive();
     unlockCallAudio();
     unlockRemoteAudio();
     return () => {
@@ -567,6 +586,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       document.removeEventListener('keydown', unlockAudio);
     };
   }, []);
+
+  // Background resume: force RTDB reconnect + touch presence when app wakes from background.
+  // Firestore persistence handles its own reconnection via IndexedDB cache.
+  useBackgroundResume(() => {
+    // Touch presence to re-mark user as online
+    if (profile?._id) {
+      import('./services/presence.js').then(({ touchPresence }) => {
+        touchPresence(profile._id).catch(() => {});
+      });
+    }
+  });
 
   useEffect(() => {
     if (panel !== 'people' && !query.trim()) return undefined;
@@ -607,7 +637,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         return messagesListEqual(current, next) ? current : next;
       });
       clearTimeout(seenTimerRef.current);
-      seenTimerRef.current = setTimeout(() => api.seen(chatId).catch(console.error), 1200);
+      seenTimerRef.current = setTimeout(() => api.seen(chatId).catch(console.error), 600);
     });
     const unsubscribeTyping = subscribeTyping(chatId, (next) => {
       if (next?._id && isBlockedUser(next._id)) {
@@ -718,6 +748,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const choice = await installApp();
     if (choice?.outcome === 'accepted') {
       const permission = await requestNotificationPermission();
+      setNotifPermission(permission);
       if (permission === 'granted') {
         const token = await registerMessagingToken();
         if (token) {
@@ -735,6 +766,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
     const chatId = selectedChat._id;
     const tempId = `temp_${Date.now()}`;
+    const clientCreatedAt = Date.now();
     const optimistic = {
       _id: tempId,
       localKey: tempId,
@@ -754,13 +786,22 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       deletedFor: [],
       deletedForEveryone: false,
       status: 'sending',
-      createdAt: new Date().toISOString(),
-      clientCreatedAt: Date.now()
+      createdAt: new Date(clientCreatedAt).toISOString(),
+      clientCreatedAt
     };
 
+    // Optimistically update both messages and chat list in one tick
     setSendEpoch((epoch) => epoch + 1);
     setMessages((current) => [...current, optimistic]);
-    setFirebaseTyping(chatId, false).catch(console.error);
+    setChats((current) =>
+      current.map((chat) =>
+        chat._id === chatId
+          ? { ...chat, lastMessage: { ...optimistic, body: optimistic.body || optimistic.type }, updatedAt: optimistic.createdAt }
+          : chat
+      )
+    );
+    // Non-blocking typing clear
+    setFirebaseTyping(chatId, false).catch(() => {});
 
     try {
       const { message } = await api.sendMessage({ chatId, sender: profile, ...payload });
@@ -777,7 +818,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         )
       );
     } catch (error) {
-      setMessages((current) => current.filter((item) => item._id !== tempId));
+      // Mark message as failed instead of removing — allows visual retry
+      setMessages((current) =>
+        current.map((item) =>
+          item._id === tempId ? { ...item, pending: false, status: 'failed' } : item
+        )
+      );
       toastError(error.message || 'Message failed to send.');
       console.error(error);
     }
@@ -1040,14 +1086,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
 
     const calls = await getCallRuntime();
-    const uid = await calls.waitForAuthReady();
+    const uid = auth?.currentUser?.uid || await calls.waitForAuthReady();
     setCallState((current) => ({ ...current, preparing: true }));
 
     try {
       if (isCaller && !skipRoomCreation) {
         await calls.createCallRoom({ callId, from: uid, to: remoteUid, callType });
-      } else if (!isCaller) {
-        await calls.verifyCallAccess(callId, uid);
       }
 
       const [stream, pc] = await Promise.all([
@@ -1098,8 +1142,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             offerToReceiveAudio: true,
             offerToReceiveVideo: callType === 'video'
           });
-          await connection.setLocalDescription(answer);
-          await calls.sendCallAnswer(callId, uid, answer, uid);
+          // Set local description and send answer in parallel for faster connection
+          await Promise.all([
+            connection.setLocalDescription(answer),
+            calls.sendCallAnswer(callId, uid, answer, uid)
+          ]);
         } catch (err) {
           console.error('[WebRTC] Callee negotiation failed:', err.message);
           throw err;
@@ -2072,7 +2119,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     }
                     setChats((current) => current.filter((c) => c._id !== id));
                   } catch (error) {
-                    toastError(error.message || 'Could not delete group.');
+                    const msg = error?.code === 'permission-denied'
+                      ? 'You do not have permission to delete this group. Only the group creator or admins can delete it.'
+                      : (error.message || 'Could not delete group.');
+                    toastError(msg);
                   }
                 }}
                 className="rounded-2xl bg-rose-600 hover:bg-rose-700 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-rose-900/20 transition active:scale-95"

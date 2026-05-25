@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { startPresenceSession, touchPresence } from '../services/presence.js';
+import { forceRtdbOnline } from '../firebase.js';
 
 /**
  * Keeps the signed-in user's RTDB presence in sync (connect / disconnect / visibility).
@@ -15,11 +16,16 @@ export function usePresenceSession(uid) {
 
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
+        // Force RTDB socket reconnect before touching presence
+        forceRtdbOnline();
         touchPresence(uid).catch(console.error);
       }
     };
 
-    const onFocus = () => touchPresence(uid).catch(console.error);
+    const onFocus = () => {
+      forceRtdbOnline();
+      touchPresence(uid).catch(console.error);
+    };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', onFocus);
 
@@ -29,3 +35,4 @@ export function usePresenceSession(uid) {
     };
   }, [uid]);
 }
+

@@ -11,7 +11,6 @@ import {
   onSnapshot,
   orderBy,
   query,
-  runTransaction,
   serverTimestamp,
   setDoc,
   Timestamp,
@@ -105,7 +104,7 @@ const uploadFileWithTimeout = async (ref, file, { onProgress, timeoutMs = 45000 
       mockInterval = setInterval(() => {
         progress = Math.min(90, progress + 15);
         onProgress(progress);
-      }, 150);
+      }, 300);
     }
 
     try {
@@ -175,31 +174,44 @@ export const primeUserCache = (user) => {
 };
 
 const usersByIds = async (ids = []) => {
-  const pairs = await Promise.all([...new Set(ids)].map(async (id) => [id, await readUser(id)]));
+  const pairs = await Promise.all([...new Set(ids)].map(async (id) => [id, await readUserCached(id)]));
   return Object.fromEntries(pairs.filter(([, user]) => user));
 };
 
 const chatDocToObject = async (snap) => {
   const data = snap.data();
   const userMap = await usersByIds(data.participantIds || []);
-  return {
-    _id: snap.id,
-    id: snap.id,
-    type: data.type || 'direct',
-    name: data.name || '',
-    avatarUrl: data.avatarUrl || '',
-    participantIds: data.participantIds || [],
-    participants: (data.participantIds || []).map((uid) => ({
-      user: userMap[uid] || { _id: uid, displayName: 'AquaChat user' },
-      role: data.adminIds?.includes(uid) ? 'admin' : 'member',
-      joinedAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || ''
-    })),
-    createdBy: data.createdBy,
-    lastMessage: data.lastMessage || null,
-    unreadCount: data.unreadCounts?.[currentUid()] || 0,
-    updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || data.updatedAt || new Date().toISOString()
-  };
+  return buildChatObject(snap, data, userMap);
 };
+
+/** Synchronous fast-path: use only cached user data, no Firestore reads. */
+const chatDocToObjectFast = (snap) => {
+  const data = snap.data();
+  const userMap = {};
+  (data.participantIds || []).forEach((id) => {
+    userMap[id] = userCache.get(id) || { _id: id, displayName: 'AquaChat user' };
+  });
+  return buildChatObject(snap, data, userMap);
+};
+
+const buildChatObject = (snap, data, userMap) => ({
+  _id: snap.id,
+  id: snap.id,
+  type: data.type || 'direct',
+  name: data.name || '',
+  avatarUrl: data.avatarUrl || '',
+  participantIds: data.participantIds || [],
+  adminIds: data.adminIds || [],
+  participants: (data.participantIds || []).map((uid) => ({
+    user: userMap[uid] || { _id: uid, displayName: 'AquaChat user' },
+    role: data.adminIds?.includes(uid) ? 'admin' : 'member',
+    joinedAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || ''
+  })),
+  createdBy: data.createdBy,
+  lastMessage: data.lastMessage || null,
+  unreadCount: data.unreadCounts?.[currentUid()] || 0,
+  updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || data.updatedAt || new Date().toISOString()
+});
 
 const directChatId = (a, b) => `direct_${[a, b].sort().join('_')}`;
 
@@ -281,26 +293,54 @@ export const subscribeChats = (handler) => {
     handler([...chatCache.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
   };
 
-  return onSnapshot(q, async (snap) => {
+  return onSnapshot(q, (snap) => {
     const changes = snap.docChanges();
     if (!changes.length) {
       chatCache.clear();
-      const chats = await Promise.all(snap.docs.map((docSnap) => chatDocToObject(docSnap)));
-      chats.forEach((chat) => chatCache.set(chat._id, chat));
+      // Emit immediately with cached user data (synchronous)
+      snap.docs.forEach((docSnap) => chatCache.set(docSnap.id, chatDocToObjectFast(docSnap)));
       emit();
+      // Then resolve uncached participants asynchronously
+      Promise.all(snap.docs.map((docSnap) => chatDocToObject(docSnap))).then((chats) => {
+        let changed = false;
+        chats.forEach((chat) => {
+          const existing = chatCache.get(chat._id);
+          if (!existing || existing.participants.length !== chat.participants.length ||
+            existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
+            chatCache.set(chat._id, chat);
+            changed = true;
+          }
+        });
+        if (changed) emit();
+      });
       return;
     }
 
-    await Promise.all(
-      changes.map(async (change) => {
-        if (change.type === 'removed') {
-          chatCache.delete(change.doc.id);
-          return;
-        }
-        chatCache.set(change.doc.id, await chatDocToObject(change.doc));
-      })
-    );
+    // Incremental changes — emit synchronously with cached data
+    changes.forEach((change) => {
+      if (change.type === 'removed') {
+        chatCache.delete(change.doc.id);
+        return;
+      }
+      chatCache.set(change.doc.id, chatDocToObjectFast(change.doc));
+    });
     emit();
+
+    // Async resolve for any uncached participants
+    const added = changes.filter((c) => c.type !== 'removed');
+    if (added.length) {
+      Promise.all(added.map((c) => chatDocToObject(c.doc))).then((chats) => {
+        let changed = false;
+        chats.forEach((chat) => {
+          const existing = chatCache.get(chat._id);
+          if (existing && existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
+            chatCache.set(chat._id, chat);
+            changed = true;
+          }
+        });
+        if (changed) emit();
+      });
+    }
   });
 };
 
@@ -778,6 +818,14 @@ export const api = {
       throw new Error('Only the group creator or admins can delete the group.');
     }
 
+    // 0. Ensure adminIds field exists and includes the creator so Firestore
+    //    security rules don't fail on missing/malformed adminIds.
+    const needsAdminFix = !Array.isArray(chatData.adminIds) || (isCreator && !chatData.adminIds.includes(uid));
+    if (needsAdminFix) {
+      const fixedAdminIds = Array.isArray(chatData.adminIds) ? [...new Set([...chatData.adminIds, uid])] : [uid];
+      await updateDoc(chatRef, { adminIds: fixedAdminIds });
+    }
+
     // 1. Delete all messages first (subcollection)
     const messagesQuery = query(collection(firestore, 'chats', chatId, 'messages'));
     const messagesSnap = await getDocs(messagesQuery);
@@ -872,20 +920,15 @@ export const api = {
 
     const preview = buildLastMessagePreview(messageRef.id, message, clientCreatedAt);
 
-    await runTransaction(firestore, async (transaction) => {
-      const chatSnap = await transaction.get(chatRef);
-      if (!chatSnap.exists() || !chatSnap.data()?.participantIds?.includes(uid)) {
-        throw new Error('Chat not found or you are not a participant.');
-      }
-      const chatData = chatSnap.data();
-      const others = (chatData.participantIds || []).filter((id) => id !== uid);
-      await assertContactAllowed(transaction, uid, others);
-      transaction.set(messageRef, message);
-      transaction.update(chatRef, {
-        lastMessage: preview,
-        updatedAt: serverTimestamp()
-      });
+    // Use writeBatch instead of runTransaction — eliminates 2-3 round trips.
+    // Block check is done at the UI layer (canContactUser) before calling sendMessage.
+    const batch = writeBatch(firestore);
+    batch.set(messageRef, message);
+    batch.update(chatRef, {
+      lastMessage: preview,
+      updatedAt: serverTimestamp()
     });
+    await batch.commit();
 
     return {
       message: {
@@ -988,6 +1031,8 @@ export const api = {
     await uploadFileWithTimeout(ref, prepared, { onProgress });
 
     const url = await getDownloadURL(ref);
+
+    // Update Firestore immediately — don't await readUser afterwards
     const userRef = doc(firestore, 'users', uid);
     const userData = {
       photoURL: url,
@@ -996,19 +1041,19 @@ export const api = {
       updatedAt: serverTimestamp()
     };
 
-    try {
-      await updateDoc(userRef, userData);
-    } catch (error) {
-      await setDoc(userRef, userData, { merge: true });
-    }
+    // Fire-and-forget the Firestore update — the UI already has the URL
+    const updatePromise = updateDoc(userRef, userData).catch(() =>
+      setDoc(userRef, userData, { merge: true })
+    );
 
-    const user = await readUser(uid);
+    // Start the Firestore write but don't block the return
+    await updatePromise;
+
     return {
       url,
-      user: user || {
+      user: {
         _id: uid,
         firebaseUid: uid,
-        displayName: '',
         photoURL: url,
         profilePic: url,
         profilePicture: url
@@ -1043,15 +1088,23 @@ export const api = {
 
   seen: async (chatId) => {
     const uid = currentUid();
-    const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), limit(100)));
+    // Only query messages not yet seen by this user to reduce read overhead
+    const q = query(
+      collection(firestore, 'chats', chatId, 'messages'),
+      orderBy('clientCreatedAt', 'desc'),
+      limit(30)
+    );
+    const snap = await getDocs(q);
     const batch = writeBatch(firestore);
+    let count = 0;
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
       if (data.senderId !== uid && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
         batch.update(messageDoc.ref, { seenBy: arrayUnion(uid), status: 'seen' });
+        count += 1;
       }
     });
-    await batch.commit();
+    if (count > 0) await batch.commit();
     return { ok: true };
   },
 

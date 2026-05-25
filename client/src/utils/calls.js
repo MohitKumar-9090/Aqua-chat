@@ -1,6 +1,7 @@
 import { get, onValue, push, ref as dbRef, remove, set, update } from 'firebase/database';
 import { auth, realtimeDb } from '../firebase.js';
-import { getIceServers } from './iceServers.js';
+import { getIceServers, prefetchIceServers } from './iceServers.js';
+export { prefetchIceServers };
 
 const RTDB_DEBUG = import.meta.env.DEV;
 
@@ -358,9 +359,6 @@ export const startOutgoingCall = async ({ callId, from, to, callType, offer }) =
 
 export const pushIceCandidate = async (callId, uid, candidate) => {
   const writerUid = uid || (await signalingUid());
-  await verifyCallAccess(callId, writerUid).catch((error) => {
-    if (RTDB_DEBUG) console.warn('[RTDB] pushIceCandidate skipped verify:', error.message);
-  });
   const path = `calls/${callId}/candidates/${writerUid}`;
   const candidateRef = push(dbRef(realtimeDb, path));
   try {
@@ -397,25 +395,20 @@ export const subscribeIceCandidates = (callId, uid, handler) => {
  */
 export const sendCallAnswer = async (callId, calleeUid, answer, targetUid = null) => {
   const uid = calleeUid || (await signalingUid());
-  await waitForAuthReady();
-  await verifyCallAccess(callId, uid);
 
   const incomingPath = `userIncoming/${uid}/${callId}`;
   const answerPath = targetUid ? `calls/${callId}/answers/${targetUid}` : `calls/${callId}/answer`;
 
-  await rtdbSet(answerPath, JSON.parse(JSON.stringify(answer)), 'sendCallAnswer:answer');
-  await rtdbSet(`calls/${callId}/status`, 'active', 'sendCallAnswer:status');
+  // Write answer + status in parallel for faster connection
+  await Promise.all([
+    rtdbSet(answerPath, JSON.parse(JSON.stringify(answer)), 'sendCallAnswer:answer'),
+    rtdbSet(`calls/${callId}/status`, 'active', 'sendCallAnswer:status')
+  ]);
 
-  try {
-    await rtdbRemove(incomingPath, 'sendCallAnswer:removeIncoming');
-  } catch (error) {
+  // Non-blocking cleanup of ring index
+  rtdbRemove(incomingPath, 'sendCallAnswer:removeIncoming').catch((error) => {
     logRtdbError('sendCallAnswer:removeIncoming', incomingPath, error);
-    if (error?.code === 'PERMISSION_DENIED') {
-      console.warn(
-        '[RTDB] Answer was saved but clearing the ring index failed. Add userIncoming rules and redeploy database rules.'
-      );
-    }
-  }
+  });
 };
 
 export const endCallRoom = async (callId, from, to) => {

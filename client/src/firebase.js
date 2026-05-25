@@ -1,6 +1,6 @@
 import { getApps, initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-import { getDatabase } from 'firebase/database';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
+import { getDatabase, goOffline as rtdbGoOffline, goOnline as rtdbGoOnline } from 'firebase/database';
 import { getStorage } from 'firebase/storage';
 import {
   applyActionCode,
@@ -32,7 +32,9 @@ try {
   validateClientEnv();
   const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
   auth = getAuth(app);
-  firestore = getFirestore(app);
+  firestore = initializeFirestore(app, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+  });
   realtimeDb = getDatabase(app);
   storage = getStorage(app);
   
@@ -94,6 +96,16 @@ export const isPasswordProvider = (user) =>
   user?.providerData?.some((provider) => provider.providerId === 'password') ?? false;
 
 export { signOut };
+
+/** Force RTDB to reconnect immediately (used on visibility resume). */
+export const forceRtdbOnline = () => {
+  if (realtimeDb) rtdbGoOnline(realtimeDb);
+};
+
+/** Hint RTDB to go offline (used on background). */
+export const hintRtdbOffline = () => {
+  if (realtimeDb) rtdbGoOffline(realtimeDb);
+};
 
 export const changePassword = (user, password) => updatePassword(user, password);
 

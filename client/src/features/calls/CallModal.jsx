@@ -71,23 +71,65 @@ export default function CallModal({
   );
 
   if (isGroupCall && isVideo) {
+    // Only show participants who have an active stream
+    const activeParticipants = remoteParticipants.filter((p) => p.hasStream);
+    const waitingParticipants = remoteParticipants.filter((p) => !p.hasStream);
+    const activeCount = activeParticipants.length;
+
+    // Dynamic grid classes based on active participant count (WhatsApp/Meet style)
+    const gridClass =
+      activeCount === 0
+        ? ''
+        : activeCount === 1
+        ? 'grid grid-cols-1 grid-rows-1'
+        : activeCount === 2
+        ? 'grid grid-cols-1 sm:grid-cols-2 grid-rows-2 sm:grid-rows-1'
+        : activeCount <= 4
+        ? 'grid grid-cols-2 grid-rows-2'
+        : 'grid grid-cols-2 grid-rows-3 sm:grid-cols-3 sm:grid-rows-2';
+
     return (
-      <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
-        {/* Grid of participant videos */}
-        <div className="relative min-h-0 flex-1 grid grid-cols-2 gap-1 p-1 sm:gap-2 sm:p-2">
-          {/* Remote participants */}
-          {remoteParticipants.length > 0 ? (
-            remoteParticipants.map((participant, idx) => (
+      <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-slate-950 via-cyan-950 to-slate-950">
+        <div className={`relative min-h-0 flex-1 gap-1 p-1 sm:gap-1.5 sm:p-1.5 ${gridClass}`}>
+          {activeCount === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-5 px-6">
+              <div className="relative">
+                <div className="absolute -inset-3 animate-pulse rounded-full bg-cyan-500/20" />
+                <Avatar name={state.caller?.displayName} image={state.caller?.photoURL} size="xl" />
+              </div>
+              <h2 className="text-xl font-black text-white">Group Video Call</h2>
+              <p className="animate-pulse text-sm font-medium text-cyan-300">
+                {state.status === 'ringing' ? 'Ringing participants…' : 'Waiting for participants to join…'}
+              </p>
+              {waitingParticipants.length > 0 && (
+                <div className="mt-2 flex items-center gap-3">
+                  {waitingParticipants.map((p) => (
+                    <div key={p.uid} className="flex flex-col items-center gap-1.5">
+                      <div className="rounded-full ring-2 ring-cyan-500/40 ring-offset-2 ring-offset-slate-950">
+                        <Avatar name={p.name} size="md" />
+                      </div>
+                      <span className="max-w-[60px] truncate text-[10px] font-semibold text-cyan-200">{p.name?.split(' ')[0]}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="hidden" />
+              {!cameraOff && (
+                <video ref={localVideoRef} autoPlay muted playsInline className="absolute bottom-3 right-3 z-10 h-28 w-20 rounded-xl border-2 border-white/30 object-cover shadow-2xl sm:h-32 sm:w-24" />
+              )}
+            </div>
+          ) : (
+            activeParticipants.map((participant) => (
               <div
-                key={participant.uid || idx}
+                key={participant.uid}
                 onClick={() => {
                   if (isAdmin) {
                     setActiveMenuUid(activeMenuUid === participant.uid ? null : participant.uid);
                   }
                 }}
-                className={`relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border transition ${
-                  isAdmin ? 'cursor-pointer hover:border-cyan-500/50' : 'border-white/20'
-                }`}
+                className={`group relative h-full w-full overflow-hidden bg-slate-900 transition-all duration-300 ${
+                  isAdmin ? 'cursor-pointer' : ''
+                } ${activeCount === 1 ? 'rounded-2xl' : 'rounded-xl'}`}
               >
                 <video
                   ref={(el) => {
@@ -96,19 +138,19 @@ export default function CallModal({
                   autoPlay
                   playsInline
                   muted
-                  className="w-full h-full object-cover"
+                  className="h-full w-full object-cover"
                 />
                 {state.participantsState?.[participant.uid]?.muted && (
-                  <div className="absolute top-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/80 text-white shadow">
-                    <MicOff size={14} />
+                  <div className="absolute right-2.5 top-2.5 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/90 text-white shadow-lg backdrop-blur-sm">
+                    <MicOff size={13} />
                   </div>
                 )}
-                <div className="absolute bottom-2 left-2 px-2 py-1 bg-black/50 rounded text-white text-xs font-medium">
-                  {participant.name || 'Participant'}
+                <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2.5 pt-6">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">{participant.name || 'Participant'}</span>
                 </div>
                 {isAdmin && activeMenuUid === participant.uid && (
-                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm transition duration-200">
-                    <div className="flex flex-col gap-2 rounded-2xl bg-slate-900/90 p-3 border border-white/10 shadow-2xl min-w-[140px]">
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="flex flex-col gap-1.5 rounded-2xl border border-white/10 bg-slate-900/95 p-3 shadow-2xl min-w-[140px]">
                       <button
                         type="button"
                         onClick={(e) => {
@@ -116,7 +158,7 @@ export default function CallModal({
                           onAdminControl(participant.uid, 'mute');
                           setActiveMenuUid(null);
                         }}
-                        className="flex items-center justify-center gap-2 px-4 py-2.5 hover:bg-white/10 rounded-xl text-white text-xs font-bold transition animate-fade-in"
+                        className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"
                       >
                         {state.participantsState?.[participant.uid]?.muted ? 'Unmute' : 'Mute'}
                       </button>
@@ -127,7 +169,7 @@ export default function CallModal({
                           onAdminControl(participant.uid, 'remove');
                           setActiveMenuUid(null);
                         }}
-                        className="flex items-center justify-center gap-2 px-4 py-2.5 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 rounded-xl text-xs font-bold transition animate-fade-in"
+                        className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold text-rose-400 transition hover:bg-rose-500/20 hover:text-rose-300"
                       >
                         Remove
                       </button>
@@ -137,7 +179,7 @@ export default function CallModal({
                           e.stopPropagation();
                           setActiveMenuUid(null);
                         }}
-                        className="px-4 py-1.5 hover:bg-white/5 text-slate-400 rounded-xl text-[10px] transition"
+                        className="rounded-xl px-4 py-1.5 text-[10px] text-slate-400 transition hover:bg-white/5"
                       >
                         Cancel
                       </button>
@@ -146,38 +188,49 @@ export default function CallModal({
                 )}
               </div>
             ))
-          ) : (
-            /* Fallback to single remote stream */
-            <div className="relative w-full h-full bg-cyan-950 rounded-lg overflow-hidden border border-white/20 col-span-2">
-              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+          )}
+
+          {activeCount > 0 && waitingParticipants.length > 0 && (
+            <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1.5 backdrop-blur-sm">
+              <span className="text-[10px] font-semibold text-cyan-200">Joining:</span>
+              {waitingParticipants.map((p) => (
+                <div key={p.uid} title={p.name} className="h-6 w-6 overflow-hidden rounded-full ring-1 ring-white/30">
+                  <Avatar name={p.name} size="xs" />
+                </div>
+              ))}
             </div>
           )}
 
-          {/* Local video - picture in picture */}
-          {!cameraOff && (
+          {activeCount > 0 && !cameraOff && (
             <video
               ref={localVideoRef}
               autoPlay
               muted
               playsInline
-              className="absolute bottom-4 right-4 z-10 h-24 w-20 rounded-lg border-2 border-white/30 object-cover shadow-2xl sm:h-28 sm:w-24"
+              className="absolute bottom-3 right-3 z-10 h-28 w-20 rounded-xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-4 sm:right-4 sm:h-32 sm:w-24"
             />
           )}
         </div>
 
         {showTopBar && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
-            <div className="space-y-1">
+          <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
+            <div className="flex items-center justify-center gap-3">
+              {activeCount > 0 && (
+                <div className="flex h-6 items-center gap-1 rounded-full bg-emerald-500/20 px-2.5">
+                  <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                  <span className="text-[10px] font-bold text-emerald-300">{activeCount + 1}</span>
+                </div>
+              )}
               <p className="text-center text-sm font-semibold text-cyan-100">
                 {state.preparing
-                  ? `Connecting to ${state.participants?.length || 1} participant${state.participants?.length > 1 ? 's' : ''}…`
+                  ? 'Connecting…'
                   : state.incoming
                   ? 'Incoming group call'
                   : state.status === 'ringing'
-                  ? `Ringing ${state.participants?.length || 1} participant${state.participants?.length > 1 ? 's' : ''}…`
+                  ? `Ringing ${remoteParticipants.length} participant${remoteParticipants.length > 1 ? 's' : ''}…`
                   : callTimeLabel
-                  ? `On call • ${callTimeLabel}`
-                  : 'On group call'}
+                  ? callTimeLabel
+                  : 'Group call'}
               </p>
             </div>
           </div>
@@ -205,7 +258,7 @@ export default function CallModal({
           )}
 
           {showControls && (
-            <div className="mx-auto flex max-w-md items-center justify-center gap-4 rounded-full bg-black/35 px-5 py-4 backdrop-blur-md sm:gap-6 sm:px-8">
+            <div className="mx-auto flex max-w-md items-center justify-center gap-4 rounded-full bg-black/40 px-5 py-4 backdrop-blur-md sm:gap-6 sm:px-8">
               {controlBtn(
                 muted,
                 onToggleMute,
