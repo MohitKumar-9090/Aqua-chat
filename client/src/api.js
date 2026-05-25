@@ -1149,11 +1149,39 @@ export const api = {
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
       if (data.senderId !== uid && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
-        batch.update(messageDoc.ref, { seenBy: arrayUnion(uid), status: 'seen' });
+        batch.update(messageDoc.ref, { seenBy: arrayUnion(uid) });
         count += 1;
       }
     });
     if (count > 0) await batch.commit();
+    return { ok: true };
+  },
+
+  deliver: async (chatId) => {
+    const uid = currentUid();
+    const q = query(
+      collection(firestore, 'chats', chatId, 'messages'),
+      orderBy('clientCreatedAt', 'desc'),
+      limit(30)
+    );
+    const snap = await getDocs(q);
+    const batch = writeBatch(firestore);
+    let count = 0;
+    snap.docs.forEach((messageDoc) => {
+      const data = messageDoc.data();
+      if (data.senderId !== uid && !data.deliveredTo?.includes(uid) && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
+        batch.update(messageDoc.ref, { deliveredTo: arrayUnion(uid) });
+        count += 1;
+      }
+    });
+    if (count > 0) await batch.commit();
+    return { ok: true };
+  },
+
+  markMessageDelivered: async (chatId, messageId) => {
+    const uid = currentUid();
+    const ref = doc(firestore, 'chats', chatId, 'messages', messageId);
+    await updateDoc(ref, { deliveredTo: arrayUnion(uid) });
     return { ok: true };
   },
 

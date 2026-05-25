@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { CheckCheck, FileText, Loader2 } from 'lucide-react';
+import { Check, CheckCheck, FileText, Loader2 } from 'lucide-react';
 import { formatTime } from '../../utils/chat.js';
 import { highlightText } from '../../utils/highlightText.jsx';
 import { formatFileSize } from '../../utils/messageMedia.js';
@@ -145,7 +145,19 @@ function MessageBubble({
           {message.pending && <Loader2 size={12} className="animate-spin" />}
           {message.status === 'failed' && <span className="font-semibold text-rose-300">Failed</span>}
           {formatTime(message.createdAt)}
-          {mine && !message.pending && message.status !== 'failed' && <CheckCheck size={13} className={message.status === 'seen' ? 'text-cyan-100' : 'text-cyan-200'} />}
+          {mine && !message.pending && message.status !== 'failed' && (
+            (() => {
+              const isSeen = Array.isArray(message.seenBy) && message.seenBy.some(id => id !== message.senderId);
+              const isDelivered = Array.isArray(message.deliveredTo) && message.deliveredTo.some(id => id !== message.senderId);
+              if (isSeen) {
+                return <CheckCheck size={13} className="text-emerald-300" />;
+              }
+              if (isDelivered) {
+                return <CheckCheck size={13} className="text-cyan-100" />;
+              }
+              return <Check size={13} className="text-cyan-200" />;
+            })()
+          )}
         </div>
       </div>
     </div>

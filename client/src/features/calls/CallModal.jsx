@@ -1,5 +1,5 @@
-import { useLayoutEffect, useState } from 'react';
-import { Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume2, VolumeX } from 'lucide-react';
+import { useEffect, useLayoutEffect, useState } from 'react';
+import { Bluetooth, Headphones, Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume1, Volume2, VolumeX } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 
 export default function CallModal({
@@ -28,6 +28,100 @@ export default function CallModal({
   const [activeMenuUid, setActiveMenuUid] = useState(null);
   const showControls = !state.incoming || state.preparing;
   const showTopBar = !isVideo || state.preparing || state.incoming || state.status === 'ringing' || state.connectedAt;
+
+  const [audioDevices, setAudioDevices] = useState([]);
+  const [audioMenuOpen, setAudioMenuOpen] = useState(false);
+  const [currentRoute, setCurrentRoute] = useState(speakerOn ? 'speaker' : 'earpiece');
+
+  useEffect(() => {
+    const loadDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const outputs = devices.filter(d => d.kind === 'audiooutput');
+        setAudioDevices(outputs);
+      } catch (err) {
+        console.warn('Enumerate audio outputs failed:', err);
+      }
+    };
+    loadDevices();
+    
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+      navigator.mediaDevices.addEventListener('devicechange', loadDevices);
+      return () => {
+        navigator.mediaDevices.removeEventListener('devicechange', loadDevices);
+      };
+    }
+  }, []);
+
+  const getAudioRoutes = () => {
+    const routes = [];
+    
+    // Speaker Off option
+    routes.push({ id: 'off', label: 'Speaker Off', icon: 'VolumeX', type: 'off' });
+
+    let hasBluetooth = false;
+    let hasWired = false;
+    let hasSpeaker = false;
+    let hasEarpiece = false;
+
+    audioDevices.forEach(d => {
+      const label = d.label.toLowerCase();
+      if (label.includes('bluetooth') || label.includes('bt') || label.includes('hands-free') || label.includes('handsfree')) {
+        routes.push({ id: d.deviceId, label: d.label || 'Bluetooth Device', icon: 'Bluetooth', type: 'bluetooth', device: d });
+        hasBluetooth = true;
+      } else if (label.includes('headphone') || label.includes('headset') || label.includes('wired') || label.includes('jack')) {
+        routes.push({ id: d.deviceId, label: d.label || 'Earphones/Headset', icon: 'Headphones', type: 'headset', device: d });
+        hasWired = true;
+      } else if (label.includes('speaker') || label.includes('loudspeaker')) {
+        routes.push({ id: d.deviceId, label: d.label || 'Full Speaker', icon: 'Volume2', type: 'speaker', device: d });
+        hasSpeaker = true;
+      } else if (label.includes('earpiece') || label.includes('receiver') || label.includes('phone') || label.includes('normal')) {
+        routes.push({ id: d.deviceId, label: d.label || 'Normal Speaker (Earpiece)', icon: 'Volume1', type: 'earpiece', device: d });
+        hasEarpiece = true;
+      }
+    });
+
+    const defaultDevice = audioDevices.find(d => d.deviceId === 'default') || audioDevices[0];
+
+    // Fallbacks to match spec
+    if (!hasEarpiece) {
+      routes.push({ id: defaultDevice?.deviceId || 'default', label: 'Normal Speaker', icon: 'Volume1', type: 'earpiece', device: defaultDevice });
+    }
+    if (!hasSpeaker) {
+      routes.push({ id: defaultDevice?.deviceId || 'default_speaker', label: 'Full Speaker', icon: 'Volume2', type: 'speaker', device: defaultDevice });
+    }
+
+    return routes;
+  };
+
+  const handleRouteSelect = async (route) => {
+    const audioEl = remoteAudioRef?.current;
+    if (!audioEl) return;
+
+    if (route.type === 'off') {
+      audioEl.muted = true;
+      setCurrentRoute('off');
+      if (speakerOn) onToggleSpeaker();
+    } else {
+      audioEl.muted = false;
+      
+      if (route.type === 'speaker' && !speakerOn) {
+        onToggleSpeaker();
+      } else if (route.type === 'earpiece' && speakerOn) {
+        onToggleSpeaker();
+      }
+
+      if (route.device && typeof audioEl.setSinkId === 'function') {
+        try {
+          await audioEl.setSinkId(route.device.deviceId);
+        } catch (err) {
+          console.warn('setSinkId failed:', err);
+        }
+      }
+      
+      setCurrentRoute(route.type);
+    }
+  };
   
   const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60)
@@ -70,6 +164,59 @@ export default function CallModal({
     </button>
   );
 
+  const renderAudioMenu = () => {
+    if (!audioMenuOpen) return null;
+    return (
+      <>
+        {/* Backdrop */}
+        <div 
+          onClick={() => setAudioMenuOpen(false)} 
+          className="fixed inset-0 z-[100] bg-black/45 backdrop-blur-xs animate-fade-in"
+        />
+        
+        {/* Responsive Options Box */}
+        <div className="fixed bottom-0 inset-x-0 z-[110] bg-white rounded-t-3xl p-5 pb-8 shadow-2xl animate-slide-up sm:fixed sm:bottom-24 sm:left-auto sm:right-6 sm:w-64 sm:rounded-2xl sm:p-3 sm:pb-3 sm:shadow-lg sm:border sm:border-slate-100">
+          <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2 px-1">
+            <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Audio Routing</h4>
+            <button onClick={() => setAudioMenuOpen(false)} className="text-slate-400 hover:text-slate-600 sm:hidden">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="space-y-1">
+            {getAudioRoutes().map(route => {
+              const isSelected = 
+                route.type === 'off' ? currentRoute === 'off' :
+                route.type === 'speaker' ? currentRoute === 'speaker' :
+                route.type === 'earpiece' ? currentRoute === 'earpiece' :
+                currentRoute === route.id;
+
+              return (
+                <button
+                  key={route.id}
+                  onClick={() => {
+                    handleRouteSelect(route);
+                    setAudioMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-semibold transition ${isSelected ? 'bg-aqua-50 text-cyan-700 font-bold' : 'text-slate-700 hover:bg-slate-50'}`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    {route.icon === 'VolumeX' && <VolumeX size={16} className="text-rose-500" />}
+                    {route.icon === 'Volume1' && <Volume1 size={16} className="text-slate-500" />}
+                    {route.icon === 'Volume2' && <Volume2 size={16} className="text-cyan-600" />}
+                    {route.icon === 'Bluetooth' && <Bluetooth size={16} className="text-indigo-500" />}
+                    {route.icon === 'Headphones' && <Headphones size={16} className="text-amber-500" />}
+                    <span>{route.label}</span>
+                  </div>
+                  {isSelected && <span className="text-emerald-500 font-bold text-xs">✓</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </>
+    );
+  };
+
   if (isGroupCall && isVideo) {
     // Only show participants who have an active stream
     const activeParticipants = remoteParticipants.filter((p) => p.hasStream);
@@ -89,8 +236,8 @@ export default function CallModal({
         : 'grid grid-cols-2 grid-rows-3 sm:grid-cols-3 sm:grid-rows-2';
 
     return (
-      <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-slate-950 via-cyan-950 to-slate-950">
-        <div className={`relative min-h-0 flex-1 gap-1 p-1 sm:gap-1.5 sm:p-1.5 ${gridClass}`}>
+      <div className="fixed inset-0 z-50 bg-slate-950 overflow-hidden">
+        <div className={`absolute inset-0 z-10 gap-1 p-1 sm:gap-1.5 sm:p-1.5 pb-28 ${gridClass}`}>
           {activeCount === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-5 px-6">
               <div className="relative">
@@ -213,7 +360,7 @@ export default function CallModal({
         </div>
 
         {showTopBar && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/60 to-transparent px-4 pb-12 pt-[max(env(safe-area-inset-top),1rem)]">
             <div className="flex items-center justify-center gap-3">
               {activeCount > 0 && (
                 <div className="flex h-6 items-center gap-1 rounded-full bg-emerald-500/20 px-2.5">
@@ -236,7 +383,7 @@ export default function CallModal({
           </div>
         )}
 
-        <div className="shrink-0 px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-3">
+        <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-12 flex flex-col items-center">
           {state.incoming && !state.preparing && (
             <div className="mb-4 flex justify-center gap-4">
               <button
@@ -273,10 +420,12 @@ export default function CallModal({
                   cameraOff ? <VideoOff size={24} /> : <Video size={24} />
                 )}
               {controlBtn(
-                !speakerOn,
-                onToggleSpeaker,
-                speakerOn ? 'Speaker off' : 'Speaker on',
-                speakerOn ? <Volume2 size={24} /> : <VolumeX size={24} />
+                currentRoute === 'off',
+                () => setAudioMenuOpen(true),
+                'Audio Output',
+                currentRoute === 'off' ? <VolumeX size={24} /> :
+                currentRoute === 'earpiece' ? <Volume1 size={24} /> :
+                <Volume2 size={24} />
               )}
               {onMinimize && !state.incoming && !state.preparing && (
                 <button
@@ -299,13 +448,15 @@ export default function CallModal({
             </div>
           )}
         </div>
+        {renderAudioMenu()}
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
-      <div className="relative min-h-0 flex-1">
+    <div className="fixed inset-0 z-50 bg-slate-950 overflow-hidden">
+      {/* Video/Voice Fullscreen Layer */}
+      <div className="absolute inset-0 z-10 w-full h-full">
         {isVideo ? (
           <>
             <video ref={remoteVideoRef} autoPlay playsInline muted className="absolute inset-0 h-full w-full object-cover" />
@@ -314,13 +465,13 @@ export default function CallModal({
               autoPlay
               muted
               playsInline
-              className={`absolute bottom-28 right-4 z-10 h-36 w-28 rounded-2xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-32 sm:h-44 sm:w-32 ${
+              className={`absolute bottom-32 right-4 z-10 h-36 w-28 rounded-2xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-36 sm:h-44 sm:w-32 ${
                 cameraOff ? 'hidden' : ''
               }`}
             />
           </>
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-4 px-6">
+          <div className="flex h-full w-full flex-col items-center justify-center gap-4 px-6 bg-gradient-to-br from-cyan-950 via-cyan-900 to-cyan-950">
             <Avatar name={state.caller?.displayName} image={state.caller?.photoURL} size="xl" />
             <h2 className="text-xl font-black text-white">{state.caller?.displayName || 'Call'}</h2>
             <p className="text-sm text-cyan-200">
@@ -338,30 +489,30 @@ export default function CallModal({
             <video ref={localVideoRef} autoPlay muted playsInline className="hidden" />
           </div>
         )}
-
-        {showTopBar && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent px-4 pb-8 pt-[max(env(safe-area-inset-top),1rem)]">
-            <div className="space-y-1">
-              <p className="text-center text-sm font-semibold text-cyan-100">
-                {state.preparing
-                  ? 'Connecting via secure relay…'
-                  : state.incoming
-                  ? 'Incoming call'
-                  : state.status === 'ringing'
-                  ? 'Ringing…'
-                  : callTimeLabel
-                  ? `On call • ${callTimeLabel}`
-                  : 'On call'}
-              </p>
-              {callTimeLabel && (
-                <p className="text-center text-xs text-cyan-200">Call duration</p>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
-      <div className="shrink-0 px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-3">
+      {showTopBar && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/60 to-transparent px-4 pb-12 pt-[max(env(safe-area-inset-top),1rem)]">
+          <div className="space-y-1">
+            <p className="text-center text-sm font-semibold text-cyan-100">
+              {state.preparing
+                ? 'Connecting via secure relay…'
+                : state.incoming
+                ? 'Incoming call'
+                : state.status === 'ringing'
+                ? 'Ringing…'
+                : callTimeLabel
+                ? `On call • ${callTimeLabel}`
+                : 'On call'}
+            </p>
+            {callTimeLabel && (
+              <p className="text-center text-xs text-cyan-200">Call duration</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-12 flex flex-col items-center">
         {state.incoming && !state.preparing && (
           <div className="mb-4 flex justify-center gap-4">
             <button
@@ -398,10 +549,12 @@ export default function CallModal({
                 cameraOff ? <VideoOff size={24} /> : <Video size={24} />
               )}
             {controlBtn(
-              !speakerOn,
-              onToggleSpeaker,
-              speakerOn ? 'Speaker off' : 'Speaker on',
-              speakerOn ? <Volume2 size={24} /> : <VolumeX size={24} />
+              currentRoute === 'off',
+              () => setAudioMenuOpen(true),
+              'Audio Output',
+              currentRoute === 'off' ? <VolumeX size={24} /> :
+              currentRoute === 'earpiece' ? <Volume1 size={24} /> :
+              <Volume2 size={24} />
             )}
             {onMinimize && !state.incoming && !state.preparing && (
               <button
@@ -424,7 +577,7 @@ export default function CallModal({
           </div>
         )}
       </div>
+      {renderAudioMenu()}
     </div>
   );
 }
-

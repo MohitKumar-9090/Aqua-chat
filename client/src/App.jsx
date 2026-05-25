@@ -300,6 +300,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setSelectedChat(chatList[0]);
   };
 
+  useEffect(() => {
+    if (selectedChat && chats.length > 0) {
+      const exists = chats.some((c) => c._id === selectedChat._id);
+      if (!exists) {
+        setSelectedChat(null);
+      }
+    }
+  }, [chats, selectedChat]);
+
   const refreshStatuses = async () => {
     const { statuses: next } = await api.statuses();
     setStatuses(next);
@@ -537,6 +546,26 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     };
   }, [profile?._id]);
 
+  useEffect(() => {
+    if (!profile?._id || !chats || chats.length === 0) return;
+    const uid = profile._id;
+    chats.forEach((chat) => {
+      const lastMsg = chat.lastMessage;
+      if (
+        lastMsg &&
+        lastMsg.senderId !== uid &&
+        !lastMsg.deletedForEveryone &&
+        lastMsg.status !== 'failed'
+      ) {
+        const delivered = lastMsg.deliveredTo || [];
+        const seen = lastMsg.seenBy || [];
+        if (!delivered.includes(uid) && !seen.includes(uid)) {
+          api.markMessageDelivered(chat._id, lastMsg._id).catch(console.error);
+        }
+      }
+    });
+  }, [chats, profile?._id]);
+
   const unlockRemoteAudio = () => {
     const audio = remoteAudioRef.current;
     if (audio) {
@@ -644,7 +673,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         return messagesListEqual(current, next) ? current : next;
       });
       clearTimeout(seenTimerRef.current);
-      seenTimerRef.current = setTimeout(() => api.seen(chatId).catch(console.error), 600);
+      seenTimerRef.current = setTimeout(() => {
+        api.deliver(chatId).catch(console.error);
+        api.seen(chatId).catch(console.error);
+      }, 600);
     });
     const unsubscribeTyping = subscribeTyping(chatId, (next) => {
       if (next?._id && isBlockedUser(next._id)) {
