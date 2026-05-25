@@ -290,7 +290,7 @@ const buildChatObject = (snap, data, userMap) => {
     createdBy: normalizedCreatedBy,
     lastMessage: data.lastMessage || null,
     unreadCount: data.unreadCounts?.[myUid] || 0,
-    updatedAt: safeIsoString(data.updatedAt) || safeIsoString(data.createdAt) || new Date().toISOString()
+    updatedAt: safeIsoString(data.updatedAt) || safeIsoString(data.lastMessage?.createdAt) || safeIsoString(data.createdAt) || new Date().toISOString()
   };
 };
 
@@ -365,34 +365,85 @@ export const subscribePresence = (handler) => {
 /** @deprecated Use startPresenceSession from services/presence.js */
 export { startPresenceSession as setCurrentPresence, touchPresence } from './services/presence.js';
 
+const mergeChatObjects = (existing, next) => {
+  if (!existing) return next;
+  
+  // Safely merge participants list, keeping rich profiles if present
+  let mergedParticipants = next.participants;
+  if (existing.participantIds.join(',') === next.participantIds.join(',')) {
+    mergedParticipants = existing.participants.map((p) => {
+      const updatedUser = next.participants.find((np) => np.user._id === p.user._id)?.user;
+      return {
+        ...p,
+        user: updatedUser ? { ...p.user, ...updatedUser } : p.user
+      };
+    });
+  }
+
+  // Robustly determine newest updatedAt and lastMessage
+  const existingMsgTime = existing.lastMessage?.createdAt ? new Date(existing.lastMessage.createdAt).getTime() : 0;
+  const nextMsgTime = next.lastMessage?.createdAt ? new Date(next.lastMessage.createdAt).getTime() : 0;
+  const useExistingMsg = existingMsgTime > nextMsgTime;
+
+  const existingTime = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+  const nextTime = next.updatedAt ? new Date(next.updatedAt).getTime() : 0;
+  const useExistingTime = existingTime > nextTime;
+
+  return {
+    ...existing,
+    ...next,
+    participants: mergedParticipants,
+    lastMessage: useExistingMsg ? (existing.lastMessage || next.lastMessage) : (next.lastMessage || existing.lastMessage),
+    updatedAt: useExistingTime ? existing.updatedAt : next.updatedAt
+  };
+};
+
 export const subscribeChats = (handler) => {
   const uid = currentUid();
   const q = query(collection(firestore, 'chats'), where('participantIds', 'array-contains', uid));
   const chatCache = new Map();
+  let isSubscribed = true;
+
+  const parseDate = (val) => {
+    if (!val) return 0;
+    const parsed = Date.parse(val);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
 
   const emit = () => {
-    handler([...chatCache.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+    if (!isSubscribed) return;
+    const sorted = [...chatCache.values()].sort((a, b) => {
+      const tA = parseDate(a.updatedAt);
+      const tB = parseDate(b.updatedAt);
+      return tB - tA;
+    });
+    handler(sorted);
   };
 
   let unsubscribe;
   const startListener = () => {
+    if (!isSubscribed) return;
     unsubscribe = onSnapshot(
       q,
       (snap) => {
+        if (!isSubscribed) return;
         const changes = snap.docChanges();
+
         if (!changes.length) {
           chatCache.clear();
-          // Emit immediately with cached user data (synchronous)
-          snap.docs.forEach((docSnap) => chatCache.set(docSnap.id, chatDocToObjectFast(docSnap)));
+          snap.docs.forEach((docSnap) => {
+            chatCache.set(docSnap.id, chatDocToObjectFast(docSnap));
+          });
           emit();
-          // Then resolve uncached participants asynchronously
+
           Promise.all(snap.docs.map((docSnap) => chatDocToObject(docSnap))).then((chats) => {
+            if (!isSubscribed) return;
             let changed = false;
             chats.forEach((chat) => {
               const existing = chatCache.get(chat._id);
-              if (!existing || existing.participants.length !== chat.participants.length ||
-                existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
-                chatCache.set(chat._id, chat);
+              if (existing) {
+                const merged = mergeChatObjects(existing, chat);
+                chatCache.set(chat._id, merged);
                 changed = true;
               }
             });
@@ -401,25 +452,27 @@ export const subscribeChats = (handler) => {
           return;
         }
 
-        // Incremental changes — emit synchronously with cached data
         changes.forEach((change) => {
           if (change.type === 'removed') {
             chatCache.delete(change.doc.id);
             return;
           }
-          chatCache.set(change.doc.id, chatDocToObjectFast(change.doc));
+          const fastChat = chatDocToObjectFast(change.doc);
+          const existing = chatCache.get(change.doc.id);
+          chatCache.set(change.doc.id, mergeChatObjects(existing, fastChat));
         });
         emit();
 
-        // Async resolve for any uncached participants
         const added = changes.filter((c) => c.type !== 'removed');
         if (added.length) {
           Promise.all(added.map((c) => chatDocToObject(c.doc))).then((chats) => {
+            if (!isSubscribed) return;
             let changed = false;
             chats.forEach((chat) => {
               const existing = chatCache.get(chat._id);
-              if (existing && existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
-                chatCache.set(chat._id, chat);
+              if (existing) {
+                const merged = mergeChatObjects(existing, chat);
+                chatCache.set(chat._id, merged);
                 changed = true;
               }
             });
@@ -430,9 +483,11 @@ export const subscribeChats = (handler) => {
       (error) => {
         console.warn('[subscribeChats] Firestore listener error, restarting:', error.message);
         if (unsubscribe) unsubscribe();
-        setTimeout(() => {
-          startListener();
-        }, 300);
+        if (isSubscribed) {
+          setTimeout(() => {
+            startListener();
+          }, 300);
+        }
       }
     );
   };
@@ -440,6 +495,7 @@ export const subscribeChats = (handler) => {
   startListener();
 
   return () => {
+    isSubscribed = false;
     if (unsubscribe) unsubscribe();
   };
 };
