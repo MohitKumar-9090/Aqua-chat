@@ -43,6 +43,9 @@ const GroupModal = lazy(() => import('./features/settings/GroupModal.jsx'));
 const GroupStrip = lazy(() => import('./features/chat/GroupStrip.jsx'));
 const ProfileSettings = lazy(() => import('./features/settings/ProfileSettings.jsx'));
 const CallModal = lazy(() => import('./features/calls/CallModal.jsx'));
+const ChatActionBottomSheet = lazy(() => import('./features/chat/ChatActionBottomSheet.jsx'));
+const GroupInfo = lazy(() => import('./features/chat/GroupInfo.jsx'));
+const FloatingCallBubble = lazy(() => import('./features/calls/FloatingCallBubble.jsx'));
 
 export default function App() {
   if (initError) {
@@ -145,6 +148,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [totalUsers, setTotalUsers] = useState(0);
   const [statuses, setStatuses] = useState([]);
   const [selectedChat, setSelectedChat] = useState(null);
+  const [groupInfoOpen, setGroupInfoOpen] = useState(false);
+  const [activeMenuChat, setActiveMenuChat] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sendEpoch, setSendEpoch] = useState(0);
   const [query, setQuery] = useState('');
@@ -165,17 +170,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const handleChatTouchStart = (chat) => {
-    if (chat.type !== 'group') return;
-    const uid = profile?._id || firebaseUser?.uid;
-    const amAdmin = chat.createdBy === uid || chat.participants?.some((p) => p.user?._id === uid && p.role === 'admin');
-    if (!amAdmin) return;
-
     if (longPressTimersRef.current[chat._id]) {
       clearTimeout(longPressTimersRef.current[chat._id]);
     }
 
     longPressTimersRef.current[chat._id] = setTimeout(() => {
-      handleDeleteGroup(chat._id);
+      setActiveMenuChat(chat);
       delete longPressTimersRef.current[chat._id];
     }, 700);
   };
@@ -220,7 +220,13 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const isAnsweringRef = useRef(false);
   const audioContextRef = useRef(null);
   const hasAutoSelectedChatRef = useRef(false);
-  const selectedChatRef = useRef(selectedChat);
+
+  const activeChat = useMemo(() => {
+    if (!selectedChat) return null;
+    return chats.find((c) => c._id === selectedChat._id) || selectedChat;
+  }, [chats, selectedChat]);
+
+  const selectedChatRef = useRef(activeChat);
   const activeMessagesChatRef = useRef(null);
   const seenTimerRef = useRef(null);
   const callStateRef = useRef(callState);
@@ -228,7 +234,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const blockStateRef = useRef(blockState);
   const prevChatsRef = useRef([]);
   const initialNotificationHandledRef = useRef(false);
-  selectedChatRef.current = selectedChat;
+  selectedChatRef.current = activeChat;
   callStateRef.current = callState;
   usersRef.current = users;
   blockStateRef.current = blockState;
@@ -615,6 +621,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [panel, query]);
 
   useEffect(() => {
+    setGroupInfoOpen(false);
     if (!selectedChat) {
       setMessages([]);
       setTyping(null);
@@ -1839,15 +1846,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     onTouchStart={() => handleChatTouchStart(chat)}
                     onTouchEnd={() => handleChatTouchEnd(chat)}
                     onContextMenu={(e) => {
-                      if (chat.type === 'group') {
-                        const uid = profile?._id || firebaseUser?.uid;
-                        const amAdmin = chat.createdBy === uid || chat.participants?.some((p) => p.user?._id === uid && p.role === 'admin');
-                        if (amAdmin) {
-                          e.preventDefault();
-                        }
-                      }
+                      e.preventDefault();
+                      setActiveMenuChat(chat);
                     }}
-                    className={`w-full flex items-center gap-3 rounded-2xl p-3 text-left transition duration-200 group ${selectedChat?._id === chat._id ? 'bg-gradient-to-r from-cyan-500/20 to-aqua-300/20 border border-cyan-200/50' : 'hover:bg-aqua-50/60 border border-transparent'}`}
+                    className={`w-full flex items-center gap-3 rounded-2xl p-3 text-left transition duration-200 group ${activeChat?._id === chat._id ? 'bg-gradient-to-r from-cyan-500/20 to-aqua-300/20 border border-cyan-200/50' : 'hover:bg-aqua-50/60 border border-transparent'}`}
                   >
                     <Avatar
                       name={chatTitle(chat, profile)}
@@ -1918,39 +1920,81 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </aside>
 
         {/* Chat Area */}
-        <section className={`${selectedChat || !isMobile ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}>
-          {selectedChat ? (
-            <>
-              <Suspense fallback={<div className="min-h-0 flex-1 animate-pulse bg-aqua-50/30" />}>
-                <ChatPanel
-                  chat={selectedChat}
-                  me={profile}
-                  messages={messages}
-                  sendEpoch={sendEpoch}
-                  statuses={visibleStatuses}
-                  typing={typing}
-                  blockState={blockState}
-                  isMobile={isMobile}
-                  onBack={closeChat}
-                  onAudio={() => startCall('voice')}
-                  onVideo={() => startCall('video')}
-                  onSend={sendPayload}
-                  onUpload={(file, options) => api.upload(file, options)}
-                  onDeleteForMe={api.deleteMessageForMe}
-                  onDeleteForEveryone={api.deleteMessageForEveryone}
-                  onBulkDeleteForMe={api.deleteMessagesForMe}
-                  onDeleteGroup={() => handleDeleteGroup(selectedChat._id)}
-                />
-              </Suspense>
-              {selectedChat.type === 'group' && <GroupStrip chat={selectedChat} me={profile} users={users} onRefresh={refresh} />}
-            </>
+        <section className={`${activeChat || !isMobile ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}>
+          {activeChat ? (
+            <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden relative">
+              <div className="flex flex-1 flex-col min-h-0 min-w-0">
+                <Suspense fallback={<div className="min-h-0 flex-1 animate-pulse bg-aqua-50/30" />}>
+                  <ChatPanel
+                    chat={activeChat}
+                    me={profile}
+                    messages={messages}
+                    sendEpoch={sendEpoch}
+                    statuses={visibleStatuses}
+                    typing={typing}
+                    blockState={blockState}
+                    isMobile={isMobile}
+                    onBack={closeChat}
+                    onAudio={() => startCall('voice')}
+                    onVideo={() => startCall('video')}
+                    onSend={sendPayload}
+                    onUpload={(file, options) => api.upload(file, options)}
+                    onDeleteForMe={api.deleteMessageForMe}
+                    onDeleteForEveryone={api.deleteMessageForEveryone}
+                    onBulkDeleteForMe={api.deleteMessagesForMe}
+                    onDeleteGroup={() => handleDeleteGroup(activeChat._id)}
+                    onOpenGroupInfo={() => setGroupInfoOpen(true)}
+                  />
+                </Suspense>
+                {activeChat.type === 'group' && <GroupStrip chat={activeChat} me={profile} users={users} onRefresh={refresh} />}
+              </div>
+              {groupInfoOpen && activeChat.type === 'group' && (
+                <Suspense fallback={null}>
+                  <GroupInfo
+                    chat={activeChat}
+                    me={profile}
+                    users={users}
+                    onClose={() => setGroupInfoOpen(false)}
+                    onUpdateGroup={async (fields) => {
+                      const res = await api.updateGroup(activeChat._id, fields);
+                      setChats((current) => current.map((c) => (c._id === activeChat._id ? res.chat : c)));
+                    }}
+                    onAddMembers={async (memberIds) => {
+                      const res = await api.addMembers(activeChat._id, memberIds);
+                      setChats((current) => current.map((c) => (c._id === activeChat._id ? res.chat : c)));
+                    }}
+                    onRemoveMember={async (memberId) => {
+                      const res = await api.removeMember(activeChat._id, memberId);
+                      setChats((current) => current.map((c) => (c._id === activeChat._id ? res.chat : c)));
+                    }}
+                    onMakeAdmin={async (memberId) => {
+                      const res = await api.makeAdmin(activeChat._id, memberId);
+                      setChats((current) => current.map((c) => (c._id === activeChat._id ? res.chat : c)));
+                    }}
+                    onTransferAdmin={async (memberId) => {
+                      const res = await api.transferAdmin(activeChat._id, memberId);
+                      setChats((current) => current.map((c) => (c._id === activeChat._id ? res.chat : c)));
+                    }}
+                    onExitGroup={async () => {
+                      await api.removeMember(activeChat._id, profile?._id || firebaseUser?.uid);
+                      setChats((current) => current.filter((c) => c._id !== activeChat._id));
+                      setSelectedChat(null);
+                      setGroupInfoOpen(false);
+                    }}
+                    onDeleteGroup={async () => {
+                      await handleDeleteGroup(activeChat._id);
+                    }}
+                  />
+                </Suspense>
+              )}
+            </div>
           ) : (
             <EmptyState />
           )}
         </section>
       </div>
 
-      <nav className={`${selectedChat && isMobile ? 'hidden' : 'grid'} fixed bottom-0 left-0 right-0 z-30 grid-cols-3 border-t border-aqua-100 bg-white/95 px-2 sm:px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-soft backdrop-blur lg:hidden`}>
+      <nav className={`${activeChat && isMobile ? 'hidden' : 'grid'} fixed bottom-0 left-0 right-0 z-30 grid-cols-3 border-t border-aqua-100 bg-white/95 px-2 sm:px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-soft backdrop-blur lg:hidden`}>
         <button onClick={() => setPanel('chats')} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-black ${panel === 'chats' ? 'bg-cyan-500 text-white' : 'text-cyan-800'}`}>
           <Home size={19} />
           Chats
@@ -2063,21 +2107,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </Suspense>
       )}
       {callState?.active && callMinimized && (
-        <button
-          type="button"
-          onClick={() => setCallMinimized(false)}
-          className="fixed bottom-24 right-4 z-50 flex min-w-[220px] items-center gap-3 rounded-3xl border border-white/80 bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-3 text-left text-white shadow-2xl shadow-cyan-500/20 transition hover:scale-[1.01] sm:bottom-6 sm:right-6"
-        >
-          <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 text-white">
-            {callState.callType === 'video' ? '📹' : '📞'}
-          </span>
-          <div className="min-w-0">
-            <p className="truncate font-black">{callState.caller?.displayName || 'Active call'}</p>
-            <p className="truncate text-xs opacity-90">
-              {callState.incoming ? 'Incoming call' : callState.status === 'ringing' ? 'Ringing…' : 'On call'}
-            </p>
-          </div>
-        </button>
+        <Suspense fallback={null}>
+          <FloatingCallBubble
+            callState={callState}
+            localVideoRef={localVideoRef}
+            remoteVideoRef={remoteVideoRef}
+            callTimer={callTimer}
+            remoteParticipants={remoteParticipants}
+            onRestore={() => setCallMinimized(false)}
+          />
+        </Suspense>
       )}
       {showInstall && (
         <Suspense fallback={null}>
@@ -2133,6 +2172,63 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           </div>
         </div>
       )}
+      <Suspense fallback={null}>
+        <ChatActionBottomSheet
+          open={Boolean(activeMenuChat)}
+          chat={activeMenuChat}
+          amAdmin={
+            activeMenuChat?.type === 'group' && (
+              activeMenuChat.createdBy === (profile?._id || firebaseUser?.uid) ||
+              activeMenuChat.participants?.some(
+                (p) => p.user?._id === (profile?._id || firebaseUser?.uid) && p.role === 'admin'
+              )
+            )
+          }
+          onClose={() => setActiveMenuChat(null)}
+          onDisconnect={async (chat) => {
+            const peer = directPeer(chat, profile);
+            if (peer?._id) {
+              try {
+                await api.disconnectUser(peer._id);
+                toastSuccess('Disconnected successfully');
+                setChats((current) => current.filter((c) => c._id !== chat._id));
+                if (selectedChat?._id === chat._id) {
+                  setSelectedChat(null);
+                }
+              } catch (err) {
+                toastError(err.message || 'Could not disconnect user');
+              }
+            }
+          }}
+          onDeleteChat={async (chat) => {
+            try {
+              await api.deletePersonalChat(chat._id);
+              toastSuccess('Chat deleted successfully');
+              setChats((current) => current.filter((c) => c._id !== chat._id));
+              if (selectedChat?._id === chat._id) {
+                setSelectedChat(null);
+              }
+            } catch (err) {
+              toastError(err.message || 'Could not delete chat');
+            }
+          }}
+          onExitGroup={async (chat) => {
+            try {
+              await api.removeMember(chat._id, profile?._id || firebaseUser?.uid);
+              toastSuccess('Left group successfully');
+              setChats((current) => current.filter((c) => c._id !== chat._id));
+              if (selectedChat?._id === chat._id) {
+                setSelectedChat(null);
+              }
+            } catch (err) {
+              toastError(err.message || 'Could not exit group');
+            }
+          }}
+          onDeleteGroup={async (chat) => {
+            handleDeleteGroup(chat._id);
+          }}
+        />
+      </Suspense>
       <audio
         ref={remoteAudioRef}
         autoPlay

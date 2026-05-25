@@ -23,7 +23,8 @@ function ChatHeader({
   onToggleBlock,
   onDownloadTxt,
   onDownloadJson,
-  onDeleteGroup
+  onDeleteGroup,
+  onOpenGroupInfo
 }) {
   const menuAnchorRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -61,12 +62,17 @@ function ChatHeader({
       <button type="button" onClick={onBack} aria-label="Back to chats" className="rounded-2xl p-2.5 text-cyan-700 transition duration-200 hover:bg-aqua-100/60 lg:hidden">
         <ArrowLeft size={22} />
       </button>
-      <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={callsEnabled && peer?.isOnline} statusRing={peerStatusRing} />
-      <div className="min-w-0 flex-1">
-        <h2 className="truncate text-sm font-black text-cyan-950">{chatTitle(chat, me)}</h2>
-        <p className="truncate text-xs font-medium text-slate-500">
-          {showTyping ? `${typing.displayName} typing...` : chat.type === 'group' ? `${chat.participants.length} members` : callsEnabled ? statusText(peer) : 'offline'}
-        </p>
+      <div 
+        onClick={() => chat.type === 'group' && onOpenGroupInfo?.()}
+        className={`flex min-w-0 flex-1 items-center gap-2 sm:gap-3 ${chat.type === 'group' ? 'cursor-pointer select-none' : ''}`}
+      >
+        <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={callsEnabled && peer?.isOnline} statusRing={peerStatusRing} />
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-sm font-black text-cyan-950">{chatTitle(chat, me)}</h2>
+          <p className="truncate text-xs font-medium text-slate-500">
+            {showTyping ? `${typing.displayName} typing...` : chat.type === 'group' ? `${chat.participants.length} members` : callsEnabled ? statusText(peer) : 'offline'}
+          </p>
+        </div>
       </div>
       {chat.type === 'direct' && callsEnabled && (
         <>

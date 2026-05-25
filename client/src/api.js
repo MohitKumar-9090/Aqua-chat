@@ -883,6 +883,55 @@ export const api = {
     return { chat: await chatDocToObject(await getDoc(doc(firestore, 'chats', chatId))) };
   },
 
+  makeAdmin: async (chatId, userId) => {
+    const chatRef = doc(firestore, 'chats', chatId);
+    await updateDoc(chatRef, { adminIds: arrayUnion(userId), updatedAt: serverTimestamp() });
+    return { chat: await chatDocToObject(await getDoc(chatRef)) };
+  },
+
+  transferAdmin: async (chatId, newAdminId) => {
+    const chatRef = doc(firestore, 'chats', chatId);
+    const snap = await getDoc(chatRef);
+    if (!snap.exists()) throw new Error('Group not found');
+    const data = snap.data();
+    const currentAdminIds = data.adminIds || [];
+    const uid = currentUid();
+    const updatedAdminIds = [...new Set([...currentAdminIds.filter(id => id !== uid), newAdminId])];
+    await updateDoc(chatRef, { adminIds: updatedAdminIds, updatedAt: serverTimestamp() });
+    return { chat: await chatDocToObject(await getDoc(chatRef)) };
+  },
+
+  deletePersonalChat: async (chatId) => {
+    const uid = currentUid();
+    const chatRef = doc(firestore, 'chats', chatId);
+    const chatSnap = await getDoc(chatRef);
+    if (!chatSnap.exists()) {
+      throw new Error('Chat not found.');
+    }
+    const chatData = chatSnap.data();
+    if (chatData.type === 'group') {
+      throw new Error('Groups must be deleted via group deletion.');
+    }
+
+    // 1. Delete all messages first (subcollection)
+    const messagesQuery = query(collection(firestore, 'chats', chatId, 'messages'));
+    const messagesSnap = await getDocs(messagesQuery);
+    
+    const batchSize = 400;
+    for (let i = 0; i < messagesSnap.docs.length; i += batchSize) {
+      const batch = writeBatch(firestore);
+      const chunk = messagesSnap.docs.slice(i, i + batchSize);
+      chunk.forEach((messageDoc) => {
+        batch.delete(messageDoc.ref);
+      });
+      await batch.commit();
+    }
+
+    // 2. Delete parent chat document
+    await deleteDoc(chatRef);
+    return { ok: true };
+  },
+
   messages: async (chatId) => {
     const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100)));
     return {
