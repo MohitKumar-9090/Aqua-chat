@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Bluetooth, Headphones, Maximize2, Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume1, Volume2, VolumeX, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 
-export default function CallModal({
+function CallModal({
   state,
   localVideoRef,
   remoteVideoRef,
@@ -822,3 +822,5 @@ export default function CallModal({
     </div>
   );
 }
+
+export default memo(CallModal);

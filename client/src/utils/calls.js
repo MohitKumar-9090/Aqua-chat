@@ -130,7 +130,7 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
   });
   const pc = new RTCPeerConnection({
     iceServers,
-    iceCandidatePoolSize: 10,
+    iceCandidatePoolSize: 2,
     iceTransportPolicy: 'all'
   });
 
@@ -152,62 +152,45 @@ export const createPeerConnection = async (onRemoteTrack, onIceCandidate) => {
     }
   };
 
-  const remoteStream = new MediaStream();
-  let emitScheduled = false;
-
-  const emitRemote = () => {
-    if (remoteStream.getTracks().length) {
-      onRemoteTrack(remoteStream);
-    }
-  };
+  // Single stable remote stream — used as fallback when event.streams is empty
+  const fallbackStream = new MediaStream();
+  let emitPending = false;
+  let activeStream = null;
 
   const scheduleEmit = () => {
-    if (emitScheduled) return;
-    emitScheduled = true;
+    if (emitPending) return;
+    emitPending = true;
     Promise.resolve().then(() => {
-      emitScheduled = false;
-      emitRemote();
+      emitPending = false;
+      if (activeStream && activeStream.getTracks().length) {
+        onRemoteTrack(activeStream);
+      }
     });
   };
 
   pc.ontrack = (event) => {
     console.log('[WebRTC] ontrack fired — kind:', event.track?.kind, 'readyState:', event.track?.readyState, 'muted:', event.track?.muted);
-    
-    const incomingStream = event.streams[0] || remoteStream;
-    
-    if (event.track && !incomingStream.getTracks().some((existing) => existing.id === event.track.id)) {
-      incomingStream.addTrack(event.track);
-      console.log('[WebRTC] Added remote track:', event.track.kind, 'id:', event.track.id, '— total tracks:', incomingStream.getTracks().length);
+
+    const stream = event.streams[0] || fallbackStream;
+    activeStream = stream;
+
+    if (event.track && !stream.getTracks().some((existing) => existing.id === event.track.id)) {
+      stream.addTrack(event.track);
+      console.log('[WebRTC] Added remote track:', event.track.kind, 'id:', event.track.id, '— total tracks:', stream.getTracks().length);
     }
-
-    const emitRemoteLocal = () => {
-      if (incomingStream.getTracks().length) {
-        onRemoteTrack(incomingStream);
-      }
-    };
-
-    let emitScheduledLocal = false;
-    const scheduleEmitLocal = () => {
-      if (emitScheduledLocal) return;
-      emitScheduledLocal = true;
-      Promise.resolve().then(() => {
-        emitScheduledLocal = false;
-        emitRemoteLocal();
-      });
-    };
 
     if (event.track) {
       event.track.onunmute = () => {
         console.log('[WebRTC] Remote track unmuted:', event.track.kind);
-        scheduleEmitLocal();
+        scheduleEmit();
       };
       event.track.onended = () => {
         console.log('[WebRTC] Remote track ended:', event.track.kind);
-        scheduleEmitLocal();
+        scheduleEmit();
       };
     }
-    
-    scheduleEmitLocal();
+
+    scheduleEmit();
   };
 
   pc.onicecandidate = (event) => {

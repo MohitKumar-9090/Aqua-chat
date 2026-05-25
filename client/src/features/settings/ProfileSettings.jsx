@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Camera, ImageIcon, KeyRound, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { api } from '../../api.js';
-import { changePassword } from '../../firebase.js';
+import { changePassword, reauthenticateUser } from '../../firebase.js';
 
 export default function ProfileSettings({ firebaseUser, profile, setProfile, onClose }) {
   const [form, setForm] = useState({
@@ -13,6 +13,7 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
   });
   const [previewUrl, setPreviewUrl] = useState('');
   const [password, setPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -71,6 +72,13 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
     setSaving(true);
     setMessage('');
     try {
+      if (password && canChangePassword) {
+        if (!currentPassword) {
+          throw new Error('Current password is required to change password.');
+        }
+        await reauthenticateUser(firebaseUser, currentPassword);
+      }
+
       const { user } = await api.updateProfile({
         name: form.displayName,
         username: form.username,
@@ -82,11 +90,19 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
       if (password && canChangePassword) {
         await changePassword(firebaseUser, password);
         setPassword('');
+        setCurrentPassword('');
       }
 
       setMessage('Profile saved');
     } catch (error) {
-      setMessage(error.message || 'Could not save profile.');
+      console.error('Failed to save profile:', error);
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setMessage('Invalid current password. Please try again.');
+      } else if (error.code === 'auth/weak-password') {
+        setMessage('New password is too weak. Must be at least 6 characters.');
+      } else {
+        setMessage(error.message || 'Could not save profile.');
+      }
     } finally {
       setSaving(false);
     }
@@ -182,6 +198,23 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, onC
             className="w-full rounded-2xl border border-aqua-100/60 bg-white px-4 py-3 text-sm outline-none disabled:bg-slate-50/60"
           />
         </label>
+
+        {canChangePassword && password.length > 0 && (
+          <label className="mb-4 block animate-pop">
+            <span className="mb-2 flex items-center gap-2 text-sm font-bold text-cyan-950">
+              <KeyRound size={15} />
+              Current password (required)
+            </span>
+            <input
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              type="password"
+              required
+              placeholder="Enter current password"
+              className="w-full rounded-2xl border border-aqua-100/60 bg-white px-4 py-3 text-sm outline-none"
+            />
+          </label>
+        )}
 
         <button disabled={busy} className="w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-aqua-400 px-4 py-3 font-bold text-white shadow-lg disabled:opacity-50">
           {photoUploading ? 'Uploading photo...' : saving ? 'Saving...' : 'Save changes'}

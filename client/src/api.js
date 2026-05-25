@@ -26,12 +26,21 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
 import { auth, firestore, realtimeDb, storage } from './firebase.js';
 
-const cleanUsername = (value = '') => value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24);
-const normalize = (value = '') => value.toString().trim().toLowerCase();
-const normalizePhone = (value = '') => value.toString().replace(/[^\d+]/g, '');
+const cleanUsername = (value) => {
+  if (value == null) return '';
+  return value.toString().trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24);
+};
+const normalize = (value) => {
+  if (value == null) return '';
+  return value.toString().trim().toLowerCase();
+};
+const normalizePhone = (value) => {
+  if (value == null) return '';
+  return value.toString().replace(/[^\d+]/g, '');
+};
 const toId = (uid) => uid;
 
-const prefixes = (value = '') => {
+const prefixes = (value) => {
   const clean = normalize(value);
   if (!clean) return [];
   return Array.from({ length: clean.length }, (_, index) => clean.slice(0, index + 1));
@@ -48,6 +57,29 @@ const buildKeywords = (profile) => {
   ].filter(Boolean);
 
   return [...new Set(values.flatMap((value) => [normalize(value), ...prefixes(value)]))];
+};
+
+const safeIsoString = (val) => {
+  if (!val) return null;
+  if (typeof val.toDate === 'function') {
+    try {
+      return val.toDate().toISOString();
+    } catch (e) {
+      return null;
+    }
+  }
+  if (val instanceof Date) return val.toISOString();
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number') return new Date(val).toISOString();
+  if (typeof val === 'object') {
+    if (typeof val.seconds === 'number') {
+      return new Date(val.seconds * 1000).toISOString();
+    }
+    if (typeof val._seconds === 'number') {
+      return new Date(val._seconds * 1000).toISOString();
+    }
+  }
+  return null;
 };
 
 const currentUid = () => {
@@ -74,7 +106,7 @@ const presentUser = (id, data = {}) => {
     bio: data.bio || 'Hey there! I am using AquaChat.',
     verified: Boolean(data.verified),
     isOnline: Boolean(data.isOnline || data.online),
-    lastSeen: data.lastSeen?.toDate?.()?.toISOString?.() || data.lastSeen || '',
+    lastSeen: safeIsoString(data.lastSeen) || '',
     connectionStatus: data.connectionStatus || 'none',
     connections: (data.connections || []).map(cId => String(cId || '').trim()),
     isFollowing: Boolean(data.isFollowing),
@@ -82,7 +114,36 @@ const presentUser = (id, data = {}) => {
   };
 };
 
-const userCache = new Map();
+const userCache = {
+  store: new Map(),
+  get(uid) {
+    const entry = this.store.get(uid);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > 180000) { // 3 minutes TTL
+      this.store.delete(uid);
+      return null;
+    }
+    return entry.user;
+  },
+  set(uid, user) {
+    this.store.set(uid, { user, timestamp: Date.now() });
+  },
+  has(uid) {
+    const entry = this.store.get(uid);
+    if (!entry) return false;
+    if (Date.now() - entry.timestamp > 180000) {
+      this.store.delete(uid);
+      return false;
+    }
+    return true;
+  },
+  delete(uid) {
+    this.store.delete(uid);
+  },
+  clear() {
+    this.store.clear();
+  }
+};
 
 const readUser = async (uid) => {
   const snap = await getDoc(doc(firestore, 'users', uid));
@@ -223,13 +284,13 @@ const buildChatObject = (snap, data, userMap) => {
           firebaseUid: String(userObj.firebaseUid || userObj.uid || cleanUid).trim()
         },
         role,
-        joinedAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || ''
+        joinedAt: safeIsoString(data.createdAt) || ''
       };
     }),
     createdBy: normalizedCreatedBy,
     lastMessage: data.lastMessage || null,
     unreadCount: data.unreadCounts?.[myUid] || 0,
-    updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || data.updatedAt || new Date().toISOString()
+    updatedAt: safeIsoString(data.updatedAt) || safeIsoString(data.createdAt) || new Date().toISOString()
   };
 };
 
@@ -384,8 +445,8 @@ export const subscribeChats = (handler) => {
 };
 
 const messageCreatedAt = (data) => {
-  if (data.createdAt?.toDate) return data.createdAt.toDate().toISOString();
-  if (typeof data.createdAt === 'string' && data.createdAt) return data.createdAt;
+  const parsed = safeIsoString(data.createdAt);
+  if (parsed) return parsed;
   if (data.clientCreatedAt) return new Date(data.clientCreatedAt).toISOString();
   return new Date().toISOString();
 };
@@ -413,11 +474,11 @@ const mapMessageDoc = (messageSnap, chatId) => {
     replyTo: data.replyTo || null,
     deletedFor: data.deletedFor || [],
     deletedForEveryone: Boolean(data.deletedForEveryone),
-    deletedAt: data.deletedAt?.toDate?.()?.toISOString?.() || data.deletedAt || null,
+    deletedAt: safeIsoString(data.deletedAt) || null,
     status: data.status || 'sent',
     seenBy: data.seenBy || [],
     deliveredTo: data.deliveredTo || [],
-    clientCreatedAt: data.clientCreatedAt || (data.createdAt?.toDate?.() ? data.createdAt.toDate().getTime() : 0),
+    clientCreatedAt: data.clientCreatedAt || (safeIsoString(data.createdAt) ? new Date(safeIsoString(data.createdAt)).getTime() : 0),
     createdAt: messageCreatedAt(data)
   };
 };
@@ -456,8 +517,8 @@ const sortMessages = (messages) =>
 
 const mapStatusDoc = async (statusSnap) => {
   const data = statusSnap.data();
-  const createdAt = data.createdAt?.toDate?.()?.toISOString?.() || '';
-  const expiresAt = data.expiresAt?.toDate?.()?.toISOString?.() || data.expiresAt || '';
+  const createdAt = safeIsoString(data.createdAt) || '';
+  const expiresAt = safeIsoString(data.expiresAt) || '';
   return {
     _id: statusSnap.id,
     ...data,
@@ -747,12 +808,12 @@ export const api = {
     const uid = currentUid();
     const current = await readUser(uid);
     const updates = {
-      displayName: body.name || body.displayName || current.displayName,
-      username: cleanUsername(body.username || current.username),
-      photoURL: body.profilePic || body.profilePicture || body.photoURL || current.photoURL,
-      phoneNumber: body.phone || body.phoneNumber || current.phoneNumber,
-      email: normalize(body.email || current.email),
-      bio: body.bio ?? current.bio,
+      displayName: body.name !== undefined ? body.name : (body.displayName !== undefined ? body.displayName : current.displayName),
+      username: body.username !== undefined ? cleanUsername(body.username) : current.username,
+      photoURL: body.profilePic !== undefined ? body.profilePic : (body.profilePicture !== undefined ? body.profilePicture : (body.photoURL !== undefined ? body.photoURL : current.photoURL)),
+      phoneNumber: body.phone !== undefined ? body.phone : (body.phoneNumber !== undefined ? body.phoneNumber : current.phoneNumber),
+      email: body.email !== undefined ? normalize(body.email) : current.email,
+      bio: body.bio !== undefined ? body.bio : current.bio,
       updatedAt: serverTimestamp()
     };
     await updateDoc(doc(firestore, 'users', uid), {
@@ -1040,7 +1101,7 @@ export const api = {
   messages: async (chatId) => {
     const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100)));
     return {
-      messages: snap.docs.map((docSnap) => ({ _id: docSnap.id, chat: chatId, ...docSnap.data(), createdAt: docSnap.data().createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString() }))
+      messages: snap.docs.map((docSnap) => ({ _id: docSnap.id, chat: chatId, ...docSnap.data(), createdAt: safeIsoString(docSnap.data().createdAt) || new Date().toISOString() }))
     };
   },
 

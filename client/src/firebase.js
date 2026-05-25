@@ -17,7 +17,9 @@ import {
   updatePassword,
   updateProfile,
   setPersistence,
-  browserLocalPersistence
+  browserLocalPersistence,
+  EmailAuthProvider,
+  reauthenticateWithCredential
 } from 'firebase/auth';
 import { firebaseConfig, validateClientEnv } from './config/env.js';
 
@@ -108,6 +110,12 @@ export const hintRtdbOffline = () => {
 };
 
 export const changePassword = (user, password) => updatePassword(user, password);
+
+export const reauthenticateUser = async (user, currentPassword) => {
+  if (!user || !user.email || !currentPassword) throw new Error('Missing reauthentication credentials.');
+  const credential = EmailAuthProvider.credential(user.email, currentPassword);
+  return reauthenticateWithCredential(user, credential);
+};
 
 /**
  * Google Sign-In with popup and redirect fallback

@@ -77,6 +77,45 @@ export default function App() {
 
   const authState = useAuth();
 
+  useEffect(() => {
+    const lockScreenOrientation = async () => {
+      try {
+        if (screen.orientation && typeof screen.orientation.lock === 'function') {
+          await screen.orientation.lock('portrait');
+          console.log('[Screen Orientation] Locked to portrait at App root');
+        }
+      } catch (err) {
+        console.warn('[Screen Orientation] Lock failed or not supported at App root:', err.message);
+      }
+    };
+
+    lockScreenOrientation();
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        lockScreenOrientation();
+      }
+    };
+
+    const handleFullscreenChange = () => {
+      if (document.fullscreenElement) {
+        lockScreenOrientation();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    window.addEventListener('orientationchange', lockScreenOrientation);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      window.removeEventListener('orientationchange', lockScreenOrientation);
+    };
+  }, []);
+
   if (authState.loading) {
     return (
       <>
@@ -135,6 +174,28 @@ export default function App() {
         <ChatShell {...authState} />
       </Suspense>
       <ToastContainer />
+      <div className="orientation-lock-overlay select-none">
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative rounded-3xl bg-cyan-500/10 p-6 ring-1 ring-cyan-500/20">
+            <svg 
+              className="h-16 w-16 text-cyan-400 animate-safe-rotate" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke="currentColor" 
+              strokeWidth={1.5}
+            >
+              <rect x="5" y="2" width="14" height="20" rx="2" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 18h.01" />
+            </svg>
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-xl font-black text-white">Portrait Mode Only</h3>
+            <p className="text-sm font-medium text-cyan-200/70 max-w-xs leading-relaxed">
+              Please rotate your device back to portrait orientation. AquaChat is optimized for portrait view.
+            </p>
+          </div>
+        </div>
+      </div>
     </>
   );
 }
@@ -181,34 +242,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }, 700);
   };
 
-  useEffect(() => {
-    const lockScreenOrientation = async () => {
-      try {
-        if (screen.orientation && typeof screen.orientation.lock === 'function') {
-          await screen.orientation.lock('portrait');
-          console.log('[Screen Orientation] Locked to portrait');
-        }
-      } catch (err) {
-        console.warn('[Screen Orientation] Lock failed or not supported:', err.message);
-      }
-    };
-
-    lockScreenOrientation();
-
-    const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'visible') {
-        lockScreenOrientation();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-    window.addEventListener('focus', handleVisibilityOrFocus);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-    };
-  }, []);
+  // Screen orientation lock is handled at the App root level for PWA stability
 
   const handleChatTouchEnd = (chat) => {
     if (longPressTimersRef.current[chat._id]) {
@@ -672,6 +706,152 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     });
   }, [chats, profile?._id]);
 
+  // Sync current user's profile updates into all active chats in memory and selectedChat
+  useEffect(() => {
+    if (!profile?._id) return;
+    setChats((currentChats) => {
+      let changed = false;
+      const nextChats = currentChats.map((chat) => {
+        const nextParticipants = chat.participants.map((part) => {
+          if (part.user._id === profile._id) {
+            if (
+              part.user.displayName !== profile.displayName ||
+              part.user.photoURL !== profile.photoURL ||
+              part.user.username !== profile.username ||
+              part.user.bio !== profile.bio
+            ) {
+              changed = true;
+              return {
+                ...part,
+                user: {
+                  ...part.user,
+                  displayName: profile.displayName,
+                  photoURL: profile.photoURL,
+                  username: profile.username,
+                  bio: profile.bio
+                }
+              };
+            }
+          }
+          return part;
+        });
+        return changed ? { ...chat, participants: nextParticipants } : chat;
+      });
+      return changed ? nextChats : currentChats;
+    });
+
+    setSelectedChat((currentSelected) => {
+      if (!currentSelected) return null;
+      let changed = false;
+      const nextParticipants = currentSelected.participants.map((part) => {
+        if (part.user._id === profile._id) {
+          if (
+            part.user.displayName !== profile.displayName ||
+            part.user.photoURL !== profile.photoURL ||
+            part.user.username !== profile.username ||
+            part.user.bio !== profile.bio
+          ) {
+            changed = true;
+            return {
+              ...part,
+              user: {
+                ...part.user,
+                displayName: profile.displayName,
+                photoURL: profile.photoURL,
+                username: profile.username,
+                bio: profile.bio
+              }
+            };
+          }
+        }
+        return part;
+      });
+      return changed ? { ...currentSelected, participants: nextParticipants } : currentSelected;
+    });
+  }, [profile]);
+
+  // Subscribe to the selected peer's profile changes in real-time
+  useEffect(() => {
+    if (!selectedPeer?._id) return;
+
+    console.log('[Realtime Sync] Subscribing to selectedPeer:', selectedPeer._id);
+    const unsubscribe = api.subscribeUser(selectedPeer._id, (updatedUser) => {
+      if (!updatedUser) return;
+
+      console.log('[Realtime Sync] selectedPeer updated:', updatedUser._id, updatedUser.displayName);
+
+      // Update the user cache instantly
+      primeUserCache(updatedUser);
+
+      // Update their entry in the active chats list
+      setChats((currentChats) => {
+        let changed = false;
+        const nextChats = currentChats.map((chat) => {
+          const nextParticipants = chat.participants.map((part) => {
+            if (part.user._id === updatedUser._id) {
+              if (
+                part.user.displayName !== updatedUser.displayName ||
+                part.user.photoURL !== updatedUser.photoURL ||
+                part.user.username !== updatedUser.username ||
+                part.user.bio !== updatedUser.bio ||
+                part.user.isOnline !== updatedUser.isOnline ||
+                part.user.online !== updatedUser.online ||
+                part.user.lastSeen !== updatedUser.lastSeen
+              ) {
+                changed = true;
+                return {
+                  ...part,
+                  user: {
+                    ...part.user,
+                    ...updatedUser
+                  }
+                };
+              }
+            }
+            return part;
+          });
+          return changed ? { ...chat, participants: nextParticipants } : chat;
+        });
+        return changed ? nextChats : currentChats;
+      });
+
+      // Update selectedChat state itself to trigger immediate re-renders in chat/user header/panels
+      setSelectedChat((currentSelected) => {
+        if (!currentSelected) return null;
+        let changed = false;
+        const nextParticipants = currentSelected.participants.map((part) => {
+          if (part.user._id === updatedUser._id) {
+            if (
+              part.user.displayName !== updatedUser.displayName ||
+              part.user.photoURL !== updatedUser.photoURL ||
+              part.user.username !== updatedUser.username ||
+              part.user.bio !== updatedUser.bio ||
+              part.user.isOnline !== updatedUser.isOnline ||
+              part.user.online !== updatedUser.online ||
+              part.user.lastSeen !== updatedUser.lastSeen
+            ) {
+              changed = true;
+              return {
+                ...part,
+                user: {
+                  ...part.user,
+                  ...updatedUser
+                }
+              };
+            }
+          }
+          return part;
+        });
+        return changed ? { ...currentSelected, participants: nextParticipants } : currentSelected;
+      });
+    });
+
+    return () => {
+      console.log('[Realtime Sync] Unsubscribing from selectedPeer:', selectedPeer._id);
+      unsubscribe();
+    };
+  }, [selectedPeer?._id]);
+
   const unlockRemoteAudio = () => {
     const audio = remoteAudioRef.current;
     if (audio) {
@@ -1070,12 +1250,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
     console.log('[WebRTC] attachRemoteMedia: stream tracks:', stream.getTracks().map(t => `${t.kind}:${t.readyState}`).join(', '), '| videoRef:', !!video, '| audioRef:', !!audio);
 
-    // If refs are not yet available (Suspense lazy-mount), retry on next frame
+    // If refs are not yet available (Suspense lazy-mount), retry on next frame (capped to prevent infinite loops)
     if (!video && !audio) {
-      console.log('[WebRTC] attachRemoteMedia: refs not ready, scheduling rAF retry');
-      requestAnimationFrame(() => attachRemoteMedia());
+      if (!attachRemoteMedia._rAFCount) attachRemoteMedia._rAFCount = 0;
+      if (attachRemoteMedia._rAFCount < 5) {
+        attachRemoteMedia._rAFCount++;
+        console.log('[WebRTC] attachRemoteMedia: refs not ready, scheduling rAF retry', attachRemoteMedia._rAFCount);
+        requestAnimationFrame(() => attachRemoteMedia());
+      }
       return;
     }
+    attachRemoteMedia._rAFCount = 0;
 
     const isGroupCall = callStateRef.current?.participants?.length > 1;
 
@@ -1306,6 +1491,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         }
       };
 
+      // Single consolidated room listener — handles SDP negotiation + admin sync
+      let lastSeenAnswerSdp = null;
       const roomListener = calls.subscribeCallRoom(callId, async (room) => {
         if (!room) {
           console.log('[Call] Room deleted in roomListener, ending call');
@@ -1313,36 +1500,67 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           return;
         }
         const connection = peerConnectionsRef.current.get(remoteUid);
+        const myUid = auth?.currentUser?.uid || profile?._id;
+
+        // --- Admin sync (merged from standalone useEffect) ---
+        if (room.participantsState?.[myUid]?.removed) {
+          console.warn('[Call] Removed from call by admin.');
+          endCall();
+          return;
+        }
+        setCallState((current) => {
+          if (!current) return null;
+          const needsUpdate = current.creator !== room.from ||
+            current.participantsState !== (room.participantsState || {});
+          if (!needsUpdate && current.status === room.status) return current;
+          return {
+            ...current,
+            creator: room.from,
+            participantsState: room.participantsState || {},
+            ...(room.status ? { status: room.status } : {})
+          };
+        });
+
+        // --- Caller: set remote description from answer ---
         const remoteAnswer = room.answers?.[remoteUid] || room.answer;
-        if (isCaller && connection && remoteAnswer && !connection.currentRemoteDescription && !connection.isSettingRemoteDescription) {
-          connection.isSettingRemoteDescription = true;
-          try {
-            await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
-            await connection.flushRemoteIceCandidates();
-          } catch (err) {
-            console.error('[WebRTC] Caller setRemoteDescription failed:', err.message);
-          } finally {
-            connection.isSettingRemoteDescription = false;
+        const answerSdp = remoteAnswer?.sdp || null;
+        if (isCaller && connection && remoteAnswer && answerSdp !== lastSeenAnswerSdp
+            && !connection.currentRemoteDescription && !connection.isSettingRemoteDescription) {
+          // Guard: only valid in have-local-offer state
+          if (connection.signalingState !== 'have-local-offer') {
+            console.log('[WebRTC] Caller skipping setRemoteDescription: signalingState is', connection.signalingState);
+          } else {
+            lastSeenAnswerSdp = answerSdp;
+            connection.isSettingRemoteDescription = true;
+            try {
+              await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
+              await connection.flushRemoteIceCandidates();
+            } catch (err) {
+              console.error('[WebRTC] Caller setRemoteDescription failed:', err.message);
+            } finally {
+              connection.isSettingRemoteDescription = false;
+            }
           }
         }
-        // Callee: handle late-arriving offer (mobile-to-mobile race condition)
+        // --- Callee: handle late-arriving offer (mobile-to-mobile race condition) ---
         if (!isCaller && connection && !connection.currentRemoteDescription && !connection.isNegotiating) {
-          const lateOffer = room.offers?.[uid] || room.offer;
-          if (lateOffer) {
-            console.log('[WebRTC] Callee received late offer via room listener');
-            try {
-              await negotiateCallee(connection, lateOffer);
-            } catch (err) {
-              console.error('[WebRTC] Late offer negotiation failed:', err.message);
+          if (connection.signalingState !== 'stable') {
+            console.log('[WebRTC] Callee skipping late offer: signalingState is', connection.signalingState);
+          } else {
+            const lateOffer = room.offers?.[uid] || room.offer;
+            if (lateOffer) {
+              console.log('[WebRTC] Callee received late offer via room listener');
+              try {
+                await negotiateCallee(connection, lateOffer);
+              } catch (err) {
+                console.error('[WebRTC] Late offer negotiation failed:', err.message);
+              }
             }
           }
         }
         if (connection && room.status === 'ended') {
           endCall();
           return;
-        }
-        if (room.status) {
-          setCallState((current) => (current ? { ...current, status: room.status } : current));
         }
       });
       callUnsubscribersRef.current.push(roomListener);
@@ -1378,16 +1596,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     attachRemoteMedia();
     // Retry to handle Suspense lazy-mount race: CallModal's video refs
     // may not exist in the DOM yet when ontrack fires.
-    // Extended timers to cover slow Suspense resolution and mobile devices.
     const retryTimers = [
-      setTimeout(() => attachRemoteMedia(), 50),
-      setTimeout(() => attachRemoteMedia(), 200),
+      setTimeout(() => attachRemoteMedia(), 100),
       setTimeout(() => attachRemoteMedia(), 500),
-      setTimeout(() => attachRemoteMedia(), 1000),
-      setTimeout(() => attachRemoteMedia(), 2000),
     ];
     return () => retryTimers.forEach(clearTimeout);
-  }, [remoteMediaEpoch, callState?.active, callState?.incoming, callState?.preparing, callState?.callType, callMinimized]);
+  }, [remoteMediaEpoch, callState?.active]);
 
   useEffect(() => {
     if (!callState?.active || !callState?.connectedAt) {
@@ -1741,49 +1955,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
   };
 
-  // Subscribe to call room state for admin controls and participant state sync
-  useEffect(() => {
-    if (!callState?.active || !callState?.callId) return undefined;
-
-    let cancelled = false;
-    let unsubscribe = () => {};
-
-    getCallRuntime().then((calls) => {
-      if (cancelled) return;
-      unsubscribe = calls.subscribeCallRoom(callState.callId, (room) => {
-        if (cancelled) return;
-        if (!room) {
-          console.log('[Call] Room deleted in admin sync listener, ending call');
-          endCall();
-          return;
-        }
-        
-        const myUid = auth?.currentUser?.uid || profile?._id;
-        
-        // 1. Check if we have been removed by admin
-        if (room.participantsState?.[myUid]?.removed) {
-          console.warn('[Call] Removed from call by admin.');
-          endCall();
-          return;
-        }
-
-        // 2. Sync participantsState and call creator in callState
-        setCallState((current) => {
-          if (!current) return null;
-          return {
-            ...current,
-            creator: room.from,
-            participantsState: room.participantsState || {}
-          };
-        });
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [callState?.active, callState?.callId, profile?._id]);
+  // Admin sync is now merged into setupPeer's roomListener to avoid duplicate Firebase subscriptions
 
   // Dynamically apply admin mute states to WebRTC tracks on the receiving side
   useEffect(() => {

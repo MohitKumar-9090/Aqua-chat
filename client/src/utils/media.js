@@ -8,7 +8,18 @@ const MEDIA_ERROR_MESSAGES = {
 };
 
 export const getCallMediaStream = async (callType, { retryOnce = true } = {}) => {
-  const constraints = { audio: true, video: callType === 'video' };
+  const constraints = {
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    },
+    video: callType === 'video' ? {
+      width: { ideal: 640, max: 1280 },
+      height: { ideal: 480, max: 720 },
+      frameRate: { ideal: 24, max: 30 }
+    } : false
+  };
 
   const request = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {

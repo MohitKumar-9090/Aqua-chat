@@ -190,3 +190,38 @@ video {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* PWA Orientation Lock Overlay */
+.orientation-lock-overlay {
+  display: none;
+}
+
+@media (orientation: landscape) and (max-width: 1024px) and (pointer: coarse) {
+  .orientation-lock-overlay {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at center, #083344 0%, #020617 100%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    color: white;
+    padding: 2.5rem;
+    text-align: center;
+  }
+}
+
+@keyframes safeRotate {
+  0% { transform: rotate(0deg); }
+  20% { transform: rotate(-90deg); }
+  50% { transform: rotate(-90deg); }
+  70% { transform: rotate(0deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.animate-safe-rotate {
+  animation: safeRotate 3.5s ease-in-out infinite;
+}
