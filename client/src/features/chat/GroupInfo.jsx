@@ -45,9 +45,10 @@ export default function GroupInfo({
     setNewName(chat.name || '');
   }, [chat.name]);
 
-  const uid = me?._id || me?.uid;
-  const amAdmin = chat.createdBy === uid || chat.adminIds?.includes(uid);
-  const isCreator = chat.createdBy === uid;
+  const uid = String(me?._id || me?.uid || '').trim();
+  const amAdmin = String(chat.createdBy || '').trim() === uid || 
+                  (Array.isArray(chat.adminIds) && chat.adminIds.map(id => String(id).trim()).includes(uid));
+  const isCreator = String(chat.createdBy || '').trim() === uid;
 
   const handleNameSave = async () => {
     if (!newName.trim() || newName === chat.name) {
@@ -192,7 +193,9 @@ export default function GroupInfo({
 
           <div className="divide-y divide-slate-100 max-h-[280px] overflow-y-auto pr-1">
             {chat.participants?.map((participant) => {
-              const isAdminRole = chat.adminIds?.includes(participant.user?._id) || chat.createdBy === participant.user?._id;
+              const pId = String(participant.user?._id || '').trim();
+              const isAdminRole = (Array.isArray(chat.adminIds) && chat.adminIds.map(id => String(id).trim()).includes(pId)) || 
+                                  String(chat.createdBy || '').trim() === pId;
               const isSelf = participant.user?._id === uid;
               
               return (

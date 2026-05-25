@@ -301,7 +301,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   useEffect(() => {
-    if (selectedChat && chats.length > 0) {
+    if (selectedChat) {
       const exists = chats.some((c) => c._id === selectedChat._id);
       if (!exists) {
         setSelectedChat(null);
@@ -749,12 +749,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const handleDisconnect = async (userId) => {
+    const currentUidStr = String(profile?._id || firebaseUser?.uid || '').trim();
+    const targetPeerId = String(userId || '').trim();
+    console.log('[Disconnect Attempt] Target Peer ID:', targetPeerId, '| Current UID:', currentUidStr);
     try {
-      await api.disconnectUser(userId);
-      patchProfileConnections(userId, false);
-      updateUser(userId, { connectionStatus: 'none' });
+      await api.disconnectUser(targetPeerId);
+      patchProfileConnections(targetPeerId, false);
+      updateUser(targetPeerId, { connectionStatus: 'none' });
       toastSuccess('Disconnected');
     } catch (err) {
+      console.error('[Disconnect Error] Target Peer ID:', targetPeerId, '| Current UID:', currentUidStr, '| Error:', err);
       toastError(err.message || 'Could not disconnect.');
     }
   };
@@ -933,15 +937,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
   };
 
-  const toggleCallSpeaker = () => {
+  const toggleCallSpeaker = (explicitSpeakerOn, explicitMuted) => {
     setCallState((current) => {
       if (!current) return current;
-      const speakerOn = !current.speakerOn;
+      const speakerOn = typeof explicitSpeakerOn === 'boolean' ? explicitSpeakerOn : !current.speakerOn;
+      const speakerMuted = typeof explicitMuted === 'boolean' ? explicitMuted : false;
       const audio = remoteAudioRef.current;
       const video = remoteVideoRef.current;
-      if (audio) audio.muted = !speakerOn;
+      if (audio) audio.muted = speakerMuted;
       if (video) video.muted = true; // Keep remote video element always muted
-      return { ...current, speakerOn };
+      return { ...current, speakerOn, speakerMuted };
     });
   };
 
@@ -997,7 +1002,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         audio.removeAttribute('src');
         audio.srcObject = stream;
       }
-      audio.muted = !speakerOn; // Sound played strictly through root-level audio element
+      audio.muted = callStateRef.current?.speakerMuted === true; // Sound played strictly through root-level audio element
       const playAudio = () => {
         audio.play().catch((e) => {
           console.warn('[WebRTC] remote audio play() failed, retrying:', e.message);
@@ -1779,7 +1784,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [profile?._id, firebaseUser?.uid]);
 
   return (
-    <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4">
+    <>
+      <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4">
       {!isOnline && (
         <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-50 mx-auto flex max-w-md items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 shadow-soft">
           <WifiOff size={18} />
@@ -2008,13 +2014,21 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                       setChats((current) => current.map((c) => (c._id === activeChat._id ? res.chat : c)));
                     }}
                     onExitGroup={async () => {
-                      await api.removeMember(activeChat._id, profile?._id || firebaseUser?.uid);
-                      setChats((current) => current.filter((c) => c._id !== activeChat._id));
+                      const id = activeChat._id;
+                      setChats((current) => current.filter((c) => c._id !== id));
                       setSelectedChat(null);
                       setGroupInfoOpen(false);
+                      try {
+                        const memberId = String(profile?._id || firebaseUser?.uid || '').trim();
+                        await api.removeMember(id, memberId);
+                      } catch (error) {
+                        console.error('[Exit Group Error] ID:', id, '| Error:', error);
+                        toastError(error.message || 'Could not exit group.');
+                        await refresh();
+                      }
                     }}
                     onDeleteGroup={async () => {
-                      await handleDeleteGroup(activeChat._id);
+                      handleDeleteGroup(String(activeChat._id || '').trim());
                     }}
                   />
                 </Suspense>
@@ -2114,6 +2128,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           <ProfileSettings firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} onClose={() => setSettingsOpen(false)} />
         </Suspense>
       )}
+      </main>
       {callState?.active && !callMinimized && (
         <Suspense fallback={null}>
           <CallModal
@@ -2182,18 +2197,23 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                 onClick={async () => {
                   const id = deleteConfirmGroupId;
                   setDeleteConfirmGroupId(null);
+                  
+                  // Optimistic UI updates
+                  setChats((current) => current.filter((c) => c._id !== id));
+                  if (selectedChatRef.current?._id === id || selectedChat?._id === id) {
+                    setSelectedChat(null);
+                  }
+                  
                   try {
                     await api.deleteGroupChat(id);
                     toastSuccess('Group deleted successfully');
-                    if (selectedChatRef.current?._id === id) {
-                      setSelectedChat(null);
-                    }
-                    setChats((current) => current.filter((c) => c._id !== id));
                   } catch (error) {
+                    console.error('[Delete Group Error] ID:', id, '| UID:', profile?._id || firebaseUser?.uid, '| Error:', error);
                     const msg = error?.code === 'permission-denied'
                       ? 'You do not have permission to delete this group. Only the group creator or admins can delete it.'
                       : (error.message || 'Could not delete group.');
                     toastError(msg);
+                    await refresh(); // Revert/sync state
                   }
                 }}
                 className="rounded-2xl bg-rose-600 hover:bg-rose-700 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-rose-900/20 transition active:scale-95"
@@ -2210,43 +2230,48 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           chat={activeMenuChat}
           amAdmin={
             activeMenuChat?.type === 'group' && (
-              activeMenuChat.createdBy === (profile?._id || firebaseUser?.uid) ||
+              String(activeMenuChat.createdBy || '').trim() === String(profile?._id || firebaseUser?.uid || '').trim() ||
               activeMenuChat.participants?.some(
-                (p) => p.user?._id === (profile?._id || firebaseUser?.uid) && p.role === 'admin'
+                (p) => String(p.user?._id || '').trim() === String(profile?._id || firebaseUser?.uid || '').trim() && p.role === 'admin'
               )
             )
           }
           onClose={() => setActiveMenuChat(null)}
           onDisconnect={async (chat) => {
             const peer = directPeer(chat, profile);
-            if (peer?._id) {
+            const peerId = peer?._id ? String(peer._id).trim() : '';
+            if (peerId) {
               try {
-                await api.disconnectUser(peer._id);
+                await api.disconnectUser(peerId);
                 toastSuccess('Disconnected successfully');
                 setChats((current) => current.filter((c) => c._id !== chat._id));
                 if (selectedChat?._id === chat._id) {
                   setSelectedChat(null);
                 }
               } catch (err) {
+                console.error('[Disconnect Error] Peer ID:', peerId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
                 toastError(err.message || 'Could not disconnect user');
               }
             }
           }}
           onDeleteChat={async (chat) => {
+            const chatId = String(chat._id || '').trim();
             try {
-              await api.deletePersonalChat(chat._id);
+              await api.deletePersonalChat(chatId);
               toastSuccess('Chat deleted successfully');
-              setChats((current) => current.filter((c) => c._id !== chat._id));
-              if (selectedChat?._id === chat._id) {
+              setChats((current) => current.filter((c) => c._id !== chatId));
+              if (selectedChat?._id === chatId) {
                 setSelectedChat(null);
               }
             } catch (err) {
+              console.error('[Delete Chat Error] Chat ID:', chatId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
               toastError(err.message || 'Could not delete chat');
             }
           }}
           onExitGroup={async (chat) => {
+            const memberId = String(profile?._id || firebaseUser?.uid || '').trim();
             try {
-              await api.removeMember(chat._id, profile?._id || firebaseUser?.uid);
+              await api.removeMember(chat._id, memberId);
               toastSuccess('Left group successfully');
               setChats((current) => current.filter((c) => c._id !== chat._id));
               if (selectedChat?._id === chat._id) {
@@ -2257,7 +2282,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             }
           }}
           onDeleteGroup={async (chat) => {
-            handleDeleteGroup(chat._id);
+            handleDeleteGroup(String(chat._id || '').trim());
           }}
         />
       </Suspense>
@@ -2275,6 +2300,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           left: '-10px'
         }}
       />
-    </main>
+    </>
   );
 }

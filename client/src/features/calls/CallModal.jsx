@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { Bluetooth, Headphones, Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume1, Volume2, VolumeX } from 'lucide-react';
+import { Bluetooth, Headphones, Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume1, Volume2, VolumeX, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 
 export default function CallModal({
@@ -53,6 +53,14 @@ export default function CallModal({
     }
   }, []);
 
+  useEffect(() => {
+    if (state.speakerMuted) {
+      setCurrentRoute('off');
+    } else {
+      setCurrentRoute(speakerOn ? 'speaker' : 'earpiece');
+    }
+  }, [speakerOn, state.speakerMuted]);
+
   const getAudioRoutes = () => {
     const routes = [];
     
@@ -101,15 +109,12 @@ export default function CallModal({
     if (route.type === 'off') {
       audioEl.muted = true;
       setCurrentRoute('off');
-      if (speakerOn) onToggleSpeaker();
+      onToggleSpeaker(speakerOn, true);
     } else {
       audioEl.muted = false;
       
-      if (route.type === 'speaker' && !speakerOn) {
-        onToggleSpeaker();
-      } else if (route.type === 'earpiece' && speakerOn) {
-        onToggleSpeaker();
-      }
+      const nextSpeakerOn = route.type === 'speaker';
+      onToggleSpeaker(nextSpeakerOn, false);
 
       if (route.device && typeof audioEl.setSinkId === 'function') {
         try {
@@ -236,7 +241,7 @@ export default function CallModal({
         : 'grid grid-cols-2 grid-rows-3 sm:grid-cols-3 sm:grid-rows-2';
 
     return (
-      <div className="fixed inset-0 z-50 bg-slate-950 overflow-hidden">
+      <div className="fixed inset-0 z-[150] bg-slate-950 overflow-hidden">
         <div className={`absolute inset-0 z-10 gap-1 p-1 sm:gap-1.5 sm:p-1.5 pb-28 ${gridClass}`}>
           {activeCount === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-5 px-6">
@@ -454,7 +459,7 @@ export default function CallModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 overflow-hidden">
+    <div className="fixed inset-0 z-[150] bg-slate-950 overflow-hidden">
       {/* Video/Voice Fullscreen Layer */}
       <div className="absolute inset-0 z-10 w-full h-full">
         {isVideo ? (

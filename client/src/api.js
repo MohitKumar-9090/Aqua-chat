@@ -52,31 +52,34 @@ const buildKeywords = (profile) => {
 const currentUid = () => {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('You must be logged in.');
-  return uid;
+  return String(uid).trim();
 };
 
-const presentUser = (id, data = {}) => ({
-  _id: id,
-  uid: id,
-  firebaseUid: id,
-  displayName: data.displayName || data.name || data.email || data.phoneNumber || 'AquaChat user',
-  name: data.displayName || data.name || '',
-  username: data.username || '',
-  email: data.email || '',
-  phoneNumber: data.phoneNumber || data.phone || '',
-  phone: data.phoneNumber || data.phone || '',
-  photoURL: data.photoURL || data.profilePic || data.profilePicture || '',
-  profilePic: data.photoURL || data.profilePic || '',
-  profilePicture: data.photoURL || data.profilePicture || '',
-  bio: data.bio || 'Hey there! I am using AquaChat.',
-  verified: Boolean(data.verified),
-  isOnline: Boolean(data.isOnline || data.online),
-  lastSeen: data.lastSeen?.toDate?.()?.toISOString?.() || data.lastSeen || '',
-  connectionStatus: data.connectionStatus || 'none',
-  connections: data.connections || [],
-  isFollowing: Boolean(data.isFollowing),
-  followsMe: Boolean(data.followsMe)
-});
+const presentUser = (id, data = {}) => {
+  const cleanId = String(id || '').trim();
+  return {
+    _id: cleanId,
+    uid: cleanId,
+    firebaseUid: cleanId,
+    displayName: data.displayName || data.name || data.email || data.phoneNumber || 'AquaChat user',
+    name: data.displayName || data.name || '',
+    username: data.username || '',
+    email: data.email || '',
+    phoneNumber: (data.phoneNumber || data.phone || '').trim(),
+    phone: (data.phoneNumber || data.phone || '').trim(),
+    photoURL: data.photoURL || data.profilePic || data.profilePicture || '',
+    profilePic: data.photoURL || data.profilePic || '',
+    profilePicture: data.photoURL || data.profilePicture || '',
+    bio: data.bio || 'Hey there! I am using AquaChat.',
+    verified: Boolean(data.verified),
+    isOnline: Boolean(data.isOnline || data.online),
+    lastSeen: data.lastSeen?.toDate?.()?.toISOString?.() || data.lastSeen || '',
+    connectionStatus: data.connectionStatus || 'none',
+    connections: (data.connections || []).map(cId => String(cId || '').trim()),
+    isFollowing: Boolean(data.isFollowing),
+    followsMe: Boolean(data.followsMe)
+  };
+};
 
 const userCache = new Map();
 
@@ -194,24 +197,40 @@ const chatDocToObjectFast = (snap) => {
   return buildChatObject(snap, data, userMap);
 };
 
-const buildChatObject = (snap, data, userMap) => ({
-  _id: snap.id,
-  id: snap.id,
-  type: data.type || 'direct',
-  name: data.name || '',
-  avatarUrl: data.avatarUrl || '',
-  participantIds: data.participantIds || [],
-  adminIds: data.adminIds || [],
-  participants: (data.participantIds || []).map((uid) => ({
-    user: userMap[uid] || { _id: uid, displayName: 'AquaChat user' },
-    role: data.adminIds?.includes(uid) ? 'admin' : 'member',
-    joinedAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || ''
-  })),
-  createdBy: data.createdBy,
-  lastMessage: data.lastMessage || null,
-  unreadCount: data.unreadCounts?.[currentUid()] || 0,
-  updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || data.updatedAt || new Date().toISOString()
-});
+const buildChatObject = (snap, data, userMap) => {
+  const normalizedParticipantIds = (data.participantIds || []).map(id => String(id || '').trim());
+  const normalizedAdminIds = (data.adminIds || []).map(id => String(id || '').trim());
+  const normalizedCreatedBy = data.createdBy ? String(data.createdBy).trim() : '';
+  const myUid = currentUid();
+  return {
+    _id: snap.id,
+    id: snap.id,
+    type: data.type || 'direct',
+    name: data.name || '',
+    avatarUrl: data.avatarUrl || '',
+    participantIds: normalizedParticipantIds,
+    adminIds: normalizedAdminIds,
+    participants: normalizedParticipantIds.map((uid) => {
+      const userObj = userMap[uid] || { _id: uid, uid: uid, firebaseUid: uid, displayName: 'AquaChat user' };
+      const cleanUid = String(uid).trim();
+      const role = normalizedAdminIds.includes(cleanUid) ? 'admin' : 'member';
+      return {
+        user: {
+          ...userObj,
+          _id: String(userObj._id || userObj.uid || cleanUid).trim(),
+          uid: String(userObj.uid || userObj._id || cleanUid).trim(),
+          firebaseUid: String(userObj.firebaseUid || userObj.uid || cleanUid).trim()
+        },
+        role,
+        joinedAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || ''
+      };
+    }),
+    createdBy: normalizedCreatedBy,
+    lastMessage: data.lastMessage || null,
+    unreadCount: data.unreadCounts?.[myUid] || 0,
+    updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || data.updatedAt || new Date().toISOString()
+  };
+};
 
 const directChatId = (a, b) => `direct_${[a, b].sort().join('_')}`;
 
@@ -293,55 +312,74 @@ export const subscribeChats = (handler) => {
     handler([...chatCache.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
   };
 
-  return onSnapshot(q, (snap) => {
-    const changes = snap.docChanges();
-    if (!changes.length) {
-      chatCache.clear();
-      // Emit immediately with cached user data (synchronous)
-      snap.docs.forEach((docSnap) => chatCache.set(docSnap.id, chatDocToObjectFast(docSnap)));
-      emit();
-      // Then resolve uncached participants asynchronously
-      Promise.all(snap.docs.map((docSnap) => chatDocToObject(docSnap))).then((chats) => {
-        let changed = false;
-        chats.forEach((chat) => {
-          const existing = chatCache.get(chat._id);
-          if (!existing || existing.participants.length !== chat.participants.length ||
-            existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
-            chatCache.set(chat._id, chat);
-            changed = true;
-          }
-        });
-        if (changed) emit();
-      });
-      return;
-    }
+  let unsubscribe;
+  const startListener = () => {
+    unsubscribe = onSnapshot(
+      q,
+      (snap) => {
+        const changes = snap.docChanges();
+        if (!changes.length) {
+          chatCache.clear();
+          // Emit immediately with cached user data (synchronous)
+          snap.docs.forEach((docSnap) => chatCache.set(docSnap.id, chatDocToObjectFast(docSnap)));
+          emit();
+          // Then resolve uncached participants asynchronously
+          Promise.all(snap.docs.map((docSnap) => chatDocToObject(docSnap))).then((chats) => {
+            let changed = false;
+            chats.forEach((chat) => {
+              const existing = chatCache.get(chat._id);
+              if (!existing || existing.participants.length !== chat.participants.length ||
+                existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
+                chatCache.set(chat._id, chat);
+                changed = true;
+              }
+            });
+            if (changed) emit();
+          });
+          return;
+        }
 
-    // Incremental changes — emit synchronously with cached data
-    changes.forEach((change) => {
-      if (change.type === 'removed') {
-        chatCache.delete(change.doc.id);
-        return;
+        // Incremental changes — emit synchronously with cached data
+        changes.forEach((change) => {
+          if (change.type === 'removed') {
+            chatCache.delete(change.doc.id);
+            return;
+          }
+          chatCache.set(change.doc.id, chatDocToObjectFast(change.doc));
+        });
+        emit();
+
+        // Async resolve for any uncached participants
+        const added = changes.filter((c) => c.type !== 'removed');
+        if (added.length) {
+          Promise.all(added.map((c) => chatDocToObject(c.doc))).then((chats) => {
+            let changed = false;
+            chats.forEach((chat) => {
+              const existing = chatCache.get(chat._id);
+              if (existing && existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
+                chatCache.set(chat._id, chat);
+                changed = true;
+              }
+            });
+            if (changed) emit();
+          });
+        }
+      },
+      (error) => {
+        console.warn('[subscribeChats] Firestore listener error, restarting:', error.message);
+        if (unsubscribe) unsubscribe();
+        setTimeout(() => {
+          startListener();
+        }, 300);
       }
-      chatCache.set(change.doc.id, chatDocToObjectFast(change.doc));
-    });
-    emit();
+    );
+  };
 
-    // Async resolve for any uncached participants
-    const added = changes.filter((c) => c.type !== 'removed');
-    if (added.length) {
-      Promise.all(added.map((c) => chatDocToObject(c.doc))).then((chats) => {
-        let changed = false;
-        chats.forEach((chat) => {
-          const existing = chatCache.get(chat._id);
-          if (existing && existing.participants.some((p, i) => p.user.displayName !== chat.participants[i]?.user.displayName)) {
-            chatCache.set(chat._id, chat);
-            changed = true;
-          }
-        });
-        if (changed) emit();
-      });
-    }
-  });
+  startListener();
+
+  return () => {
+    if (unsubscribe) unsubscribe();
+  };
 };
 
 const messageCreatedAt = (data) => {
@@ -467,6 +505,8 @@ export const subscribeMessages = (chatId, handler) => {
       if (n.body !== l.body || n.mediaUrl !== l.mediaUrl || n.type !== l.type) return true;
       if (n.deletedForEveryone !== l.deletedForEveryone) return true;
       if ((n.replyTo?.messageId || '') !== (l.replyTo?.messageId || '')) return true;
+      if (n.status !== l.status) return true;
+      if ((n.seenBy || []).join(',') !== (l.seenBy || []).join(',') || (n.deliveredTo || []).join(',') !== (l.deliveredTo || []).join(',')) return true;
     }
     return false;
   };
@@ -764,8 +804,9 @@ export const api = {
     return { chats: chats.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)) };
   },
 
-  createDirectChat: async (userId) => {
+  createDirectChat: async (userIdInput) => {
     const uid = currentUid();
+    const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot message yourself.');
     const chatId = directChatId(uid, userId);
     const ref = doc(firestore, 'chats', chatId);
@@ -782,14 +823,16 @@ export const api = {
 
   createGroupChat: async ({ name, avatarUrl = '', memberIds = [] }) => {
     const uid = currentUid();
-    const participantIds = [...new Set([uid, ...memberIds])];
+    const normalizedUid = String(uid).trim();
+    const trimmedMemberIds = memberIds.map((id) => String(id || '').trim());
+    const participantIds = [...new Set([normalizedUid, ...trimmedMemberIds])];
     const ref = await addDoc(collection(firestore, 'chats'), {
       type: 'group',
       name: name.trim(),
       avatarUrl,
       participantIds,
-      adminIds: [uid],
-      createdBy: uid,
+      adminIds: [normalizedUid],
+      createdBy: normalizedUid,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
@@ -812,17 +855,21 @@ export const api = {
     if (chatData.type !== 'group') {
       throw new Error('Only groups can be deleted.');
     }
-    const isCreator = chatData.createdBy === uid;
-    const isAdmin = chatData.adminIds?.includes(uid);
+    const normalizedUid = String(uid).trim();
+    const isCreator = String(chatData.createdBy || '').trim() === normalizedUid;
+    const adminIds = Array.isArray(chatData.adminIds) ? chatData.adminIds.map(id => String(id || '').trim()) : [];
+    const isAdmin = adminIds.includes(normalizedUid);
     if (!isCreator && !isAdmin) {
       throw new Error('Only the group creator or admins can delete the group.');
     }
 
     // 0. Ensure adminIds field exists and includes the creator so Firestore
     //    security rules don't fail on missing/malformed adminIds.
-    const needsAdminFix = !Array.isArray(chatData.adminIds) || (isCreator && !chatData.adminIds.includes(uid));
+    const needsAdminFix = !Array.isArray(chatData.adminIds) || (isCreator && !adminIds.includes(normalizedUid));
     if (needsAdminFix) {
-      const fixedAdminIds = Array.isArray(chatData.adminIds) ? [...new Set([...chatData.adminIds, uid])] : [uid];
+      const fixedAdminIds = Array.isArray(chatData.adminIds) 
+        ? [...new Set([...adminIds, normalizedUid])] 
+        : [normalizedUid];
       await updateDoc(chatRef, { adminIds: fixedAdminIds });
     }
 
@@ -874,18 +921,21 @@ export const api = {
   },
 
   addMembers: async (chatId, memberIds) => {
-    await updateDoc(doc(firestore, 'chats', chatId), { participantIds: arrayUnion(...memberIds), updatedAt: serverTimestamp() });
+    const trimmedIds = memberIds.map((id) => String(id || '').trim());
+    await updateDoc(doc(firestore, 'chats', chatId), { participantIds: arrayUnion(...trimmedIds), updatedAt: serverTimestamp() });
     return { chat: await chatDocToObject(await getDoc(doc(firestore, 'chats', chatId))) };
   },
 
   removeMember: async (chatId, userId) => {
-    await updateDoc(doc(firestore, 'chats', chatId), { participantIds: arrayRemove(userId), updatedAt: serverTimestamp() });
+    const trimmedId = String(userId || '').trim();
+    await updateDoc(doc(firestore, 'chats', chatId), { participantIds: arrayRemove(trimmedId), updatedAt: serverTimestamp() });
     return { chat: await chatDocToObject(await getDoc(doc(firestore, 'chats', chatId))) };
   },
 
   makeAdmin: async (chatId, userId) => {
+    const trimmedId = String(userId || '').trim();
     const chatRef = doc(firestore, 'chats', chatId);
-    await updateDoc(chatRef, { adminIds: arrayUnion(userId), updatedAt: serverTimestamp() });
+    await updateDoc(chatRef, { adminIds: arrayUnion(trimmedId), updatedAt: serverTimestamp() });
     return { chat: await chatDocToObject(await getDoc(chatRef)) };
   },
 
@@ -894,9 +944,10 @@ export const api = {
     const snap = await getDoc(chatRef);
     if (!snap.exists()) throw new Error('Group not found');
     const data = snap.data();
-    const currentAdminIds = data.adminIds || [];
+    const currentAdminIds = (data.adminIds || []).map((id) => String(id || '').trim());
     const uid = currentUid();
-    const updatedAdminIds = [...new Set([...currentAdminIds.filter(id => id !== uid), newAdminId])];
+    const cleanNewAdminId = String(newAdminId || '').trim();
+    const updatedAdminIds = [...new Set([...currentAdminIds.filter((id) => id !== uid), cleanNewAdminId])];
     await updateDoc(chatRef, { adminIds: updatedAdminIds, updatedAt: serverTimestamp() });
     return { chat: await chatDocToObject(await getDoc(chatRef)) };
   },
@@ -1239,15 +1290,17 @@ export const api = {
     return { ok: true };
   },
 
-  connectUser: async (userId) => {
+  connectUser: async (userIdInput) => {
     const uid = currentUid();
+    const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot connect with yourself.');
     await updateDoc(doc(firestore, 'users', uid), { connections: arrayUnion(userId) });
     const { chat } = await api.createDirectChat(userId);
     return { status: 'connected', chatId: chat._id, chat };
   },
-  sendConnectionRequest: async (userId) => {
+  sendConnectionRequest: async (userIdInput) => {
     const uid = currentUid();
+    const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot connect with yourself.');
     const requestId = `${uid}_${userId}`;
     await setDoc(doc(firestore, 'connectionRequests', requestId), {
@@ -1258,36 +1311,43 @@ export const api = {
     }, { merge: true });
     return { status: 'requested' };
   },
-  acceptConnectionRequest: async (requestId) => {
+  acceptConnectionRequest: async (requestIdInput) => {
     const uid = currentUid();
+    const requestId = String(requestIdInput || '').trim();
     const snap = await getDoc(doc(firestore, 'connectionRequests', requestId));
     if (!snap.exists()) throw new Error('Connection request not found.');
     const data = snap.data();
-    if (data.receiverId !== uid) throw new Error('You can only accept requests sent to you.');
+    const senderId = String(data.senderId || '').trim();
+    const receiverId = String(data.receiverId || '').trim();
+    if (receiverId !== uid) throw new Error('You can only accept requests sent to you.');
     if (data.status !== 'pending') throw new Error('Request is not pending.');
     
     await updateDoc(doc(firestore, 'connectionRequests', requestId), { status: 'accepted' });
-    await updateDoc(doc(firestore, 'users', uid), { connections: arrayUnion(data.senderId) });
-    await updateDoc(doc(firestore, 'users', data.senderId), { connections: arrayUnion(uid) });
+    await updateDoc(doc(firestore, 'users', uid), { connections: arrayUnion(senderId) });
+    await updateDoc(doc(firestore, 'users', senderId), { connections: arrayUnion(uid) });
     
-    const { chat } = await api.createDirectChat(data.senderId);
+    const { chat } = await api.createDirectChat(senderId);
     return { status: 'connected', chatId: chat._id, chat };
   },
-  rejectConnectionRequest: async (requestId) => {
+  rejectConnectionRequest: async (requestIdInput) => {
     const uid = currentUid();
+    const requestId = String(requestIdInput || '').trim();
     const snap = await getDoc(doc(firestore, 'connectionRequests', requestId));
     if (!snap.exists()) throw new Error('Connection request not found.');
     const data = snap.data();
-    if (data.receiverId !== uid) throw new Error('You can only reject requests sent to you.');
+    const receiverId = String(data.receiverId || '').trim();
+    if (receiverId !== uid) throw new Error('You can only reject requests sent to you.');
     
     await updateDoc(doc(firestore, 'connectionRequests', requestId), { status: 'rejected' });
     return { status: 'rejected' };
   },
-  disconnectUser: async (userId) => {
+  disconnectUser: async (userIdInput) => {
     const uid = currentUid();
+    const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot disconnect from yourself.');
     await updateDoc(doc(firestore, 'users', uid), { connections: arrayRemove(userId) });
     await updateDoc(doc(firestore, 'users', userId), { connections: arrayRemove(uid) }).catch((error) => {
+      console.error('[Disconnect Peer Error] userId:', userId, '| UID:', uid, '| Error:', error);
       if (error?.code !== 'permission-denied') throw error;
     });
     return { status: 'disconnected' };
