@@ -376,8 +376,9 @@ html.theme-dark body {
 }
 
 .theme-dark .chat-list-item-active {
-  background: linear-gradient(90deg, rgba(0, 168, 132, 0.18), rgba(10, 166, 166, 0.11)) !important;
-  border-color: rgba(10, 166, 166, 0.42) !important;
+  background: #203a3d !important;
+  border-color: rgba(10, 166, 166, 0.55) !important;
+  box-shadow: inset 3px 0 0 #00a884 !important;
 }
 
 .theme-dark .chat-list-item h3,

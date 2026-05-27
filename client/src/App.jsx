@@ -221,6 +221,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callState, setCallState] = useState(null);
+  const [facingMode, setFacingMode] = useState('user');
   const [callMinimized, setCallMinimized] = useState(false);
   const [deleteConfirmGroupId, setDeleteConfirmGroupId] = useState(null);
   const [notifPermission, setNotifPermission] = useState(() => ('Notification' in window ? Notification.permission : 'unsupported'));
@@ -1255,6 +1256,61 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     });
   };
 
+  const switchCamera = async () => {
+    if (!callState?.active || callState?.callType !== 'video') return;
+    const newFacingMode = facingMode === 'user' ? 'environment' : 'user';
+    console.log('[WebRTC] Switching camera facingMode to:', newFacingMode);
+
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: newFacingMode,
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 },
+          frameRate: { ideal: 24, max: 30 }
+        }
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) {
+        throw new Error('No video track found in switched camera stream.');
+      }
+
+      const localStream = localStreamRef.current;
+      if (localStream) {
+        const oldVideoTrack = localStream.getVideoTracks()[0];
+        if (oldVideoTrack) {
+          localStream.removeTrack(oldVideoTrack);
+          oldVideoTrack.stop();
+        }
+        localStream.addTrack(newVideoTrack);
+      }
+
+      peerConnectionsRef.current.forEach((pc) => {
+        const senders = pc.getSenders();
+        const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+        if (videoSender) {
+          videoSender.replaceTrack(newVideoTrack).catch(err => {
+            console.warn('[WebRTC] replaceTrack failed for peer:', err.message);
+          });
+        }
+      });
+
+      const localVideo = localVideoRef.current;
+      if (localVideo) {
+        localVideo.srcObject = null;
+        localVideo.srcObject = localStream;
+        localVideo.play().catch(() => {});
+      }
+
+      setFacingMode(newFacingMode);
+    } catch (err) {
+      console.error('[WebRTC] Camera switch failed:', err.message);
+      toastError(err.message || 'Could not switch camera.');
+    }
+  };
+
   const attachRemoteMedia = () => {
     const stream = remoteStreamRef.current;
     if (!stream) {
@@ -1544,13 +1600,32 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const answerSdp = remoteAnswer?.sdp || null;
         if (isCaller && connection && remoteAnswer && answerSdp !== lastSeenAnswerSdp
             && !connection.currentRemoteDescription && !connection.isSettingRemoteDescription) {
-          // Guard: only valid in have-local-offer state
-          if (connection.signalingState !== 'have-local-offer') {
-            console.log('[WebRTC] Caller skipping setRemoteDescription: signalingState is', connection.signalingState);
-          } else {
+          
+          const tryApplyAnswer = async () => {
+            if (connection.signalingState !== 'have-local-offer') {
+              if (connection.waitingForLocalOffer) {
+                console.log('[WebRTC] Caller already waiting for have-local-offer signalingState');
+                return;
+              }
+              connection.waitingForLocalOffer = true;
+              console.log('[WebRTC] Caller waiting for have-local-offer signalingState. Current state:', connection.signalingState);
+              
+              const handleSignalingStateChange = async () => {
+                if (connection.signalingState === 'have-local-offer') {
+                  connection.waitingForLocalOffer = false;
+                  connection.removeEventListener('signalingstatechange', handleSignalingStateChange);
+                  console.log('[WebRTC] signalingState transitioned to have-local-offer, applying answer');
+                  tryApplyAnswer();
+                }
+              };
+              connection.addEventListener('signalingstatechange', handleSignalingStateChange);
+              return;
+            }
+
             lastSeenAnswerSdp = answerSdp;
             connection.isSettingRemoteDescription = true;
             try {
+              console.log('[WebRTC] Caller setting remote description from answer');
               await connection.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
               await connection.flushRemoteIceCandidates();
             } catch (err) {
@@ -1558,7 +1633,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             } finally {
               connection.isSettingRemoteDescription = false;
             }
-          }
+          };
+
+          tryApplyAnswer();
         }
         // --- Callee: handle late-arriving offer (mobile-to-mobile race condition) ---
         if (!isCaller && connection && !connection.currentRemoteDescription && !connection.isNegotiating) {
@@ -1899,6 +1976,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setRemoteParticipants([]);
     setActiveCallId(null);
     setCallState(null);
+    setFacingMode('user');
     setCallMinimized(false);
     // Close AudioContext used for mobile audio unlock
     if (audioContextRef.current) {
@@ -2462,6 +2540,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             onToggleMute={toggleCallMute}
             onToggleCamera={toggleCallCamera}
             onToggleSpeaker={toggleCallSpeaker}
+            onSwitchCamera={switchCamera}
+            facingMode={facingMode}
             onAnswer={answerCall}
             onEnd={endCall}
             onMinimize={() => setCallMinimized(true)}

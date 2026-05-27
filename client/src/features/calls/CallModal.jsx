@@ -1,5 +1,5 @@
-import { memo, useEffect, useLayoutEffect, useState, useRef } from 'react';
-import { Bluetooth, Headphones, Maximize2, Mic, MicOff, Minimize2, PhoneOff, Video, VideoOff, Volume1, Volume2, VolumeX, X } from 'lucide-react';
+import { memo, useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react';
+import { Bluetooth, Headphones, Maximize2, Mic, MicOff, Minimize2, PhoneOff, SwitchCamera, Video, VideoOff, Volume1, Volume2, VolumeX, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 
 function CallModal({
@@ -13,6 +13,8 @@ function CallModal({
   onToggleMute,
   onToggleCamera,
   onToggleSpeaker,
+  onSwitchCamera,
+  facingMode = 'user',
   onAnswer,
   onEnd,
   onMinimize,
@@ -600,6 +602,13 @@ function CallModal({
                     cameraOff ? 'Turn camera on' : 'Turn camera off',
                     cameraOff ? <VideoOff size={24} /> : <Video size={24} />
                   )}
+                {isVideo && !cameraOff && onSwitchCamera &&
+                  controlBtn(
+                    false,
+                    onSwitchCamera,
+                    'Switch Camera',
+                    <SwitchCamera size={24} />
+                  )}
                 {controlBtn(
                   currentRoute === 'off',
                   () => setAudioMenuOpen(true),
@@ -780,6 +789,13 @@ function CallModal({
                   onToggleCamera,
                   cameraOff ? 'Turn camera on' : 'Turn camera off',
                   cameraOff ? <VideoOff size={24} /> : <Video size={24} />
+                )}
+              {isVideo && !cameraOff && onSwitchCamera &&
+                controlBtn(
+                  false,
+                  onSwitchCamera,
+                  'Switch Camera',
+                  <SwitchCamera size={24} />
                 )}
               {controlBtn(
                 currentRoute === 'off',
