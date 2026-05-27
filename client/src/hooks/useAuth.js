@@ -26,6 +26,12 @@ const pruneProfileForStorage = (profile) => {
     profilePic: profile.profilePic,
     profilePicture: profile.profilePicture,
     bio: profile.bio,
+    about: profile.about,
+    connections: profile.connections || [],
+    settings: profile.settings || {
+      theme: 'light',
+      statusPrivacy: { mode: 'everyone', selectedIds: [] }
+    },
     isOnline: profile.isOnline,
     lastSeen: profile.lastSeen
   };
@@ -249,7 +255,7 @@ export const useAuth = () => {
     return api.subscribeUser(uid, (user) => {
       if (!user) return;
       primeUserCache(user);
-      setProfile((current) => ({ ...current, ...user }));
+      setProfile((current) => ({ ...(current || {}), ...user }));
       const pruned = pruneProfileForStorage(user);
       localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(pruned));
     });

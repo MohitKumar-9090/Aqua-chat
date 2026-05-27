@@ -338,9 +338,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   );
 
   const visibleStatuses = useMemo(
-    () => filterStatusesForContacts(statuses, statusContactIds),
-    [statuses, statusContactIds]
+    () => filterStatusesForContacts(statuses, statusContactIds, profile?._id),
+    [statuses, statusContactIds, profile?._id]
   );
+
+  const theme = profile?.settings?.theme === 'dark' ? 'dark' : 'light';
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('theme-dark', theme === 'dark');
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
 
   const loadUsers = async (searchText = query) => {
     setUsersLoading(true);
@@ -1181,6 +1188,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       toastSuccess('Status posted');
     } catch (error) {
       toastError(error.message || 'Could not post status.');
+      throw error;
+    }
+  };
+
+  const deleteStatus = async (statusId) => {
+    try {
+      await api.deleteStatus(statusId);
+      setStatuses((current) => current.filter((status) => status._id !== statusId));
+      toastSuccess('Status deleted');
+    } catch (error) {
+      toastError(error.message || 'Could not delete status.');
       throw error;
     }
   };
@@ -2064,7 +2082,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   return (
     <>
-      <main className="app-shell bg-gradient-to-br from-aqua-25 via-white to-aqua-50 overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4">
+      <main className={`app-shell overflow-hidden p-0 sm:p-2 md:p-3 lg:p-4 ${theme === 'dark' ? 'theme-dark bg-[#0b141a]' : 'bg-gradient-to-br from-aqua-25 via-white to-aqua-50'}`}>
       {!isOnline && (
         <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-50 mx-auto flex max-w-md items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 shadow-soft">
           <WifiOff size={18} />
@@ -2133,7 +2151,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
           {/* Status Tray */}
           <Suspense fallback={<div className="h-20 animate-pulse bg-aqua-50/40" />}>
-            <StatusTray statuses={visibleStatuses} onCreateStatus={createStatus} me={profile} />
+            <StatusTray statuses={visibleStatuses} onCreateStatus={createStatus} onDeleteStatus={deleteStatus} me={profile} />
           </Suspense>
 
           {/* Tab Buttons */}
@@ -2419,7 +2437,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       )}
       {settingsOpen && (
         <Suspense fallback={null}>
-          <ProfileSettings firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} onClose={() => setSettingsOpen(false)} />
+          <ProfileSettings
+            firebaseUser={firebaseUser}
+            profile={profile}
+            setProfile={setProfile}
+            chats={chats}
+            users={users}
+            onClose={() => setSettingsOpen(false)}
+            onLogout={logout}
+          />
         </Suspense>
       )}
       </main>

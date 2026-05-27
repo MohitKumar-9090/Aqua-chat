@@ -5,7 +5,7 @@ import { groupStatusesByUser, userHasActiveStatus, userHasUnviewedStatus } from 
 import StatusCreateModal from './StatusCreateModal.jsx';
 import StatusViewer from './StatusViewer.jsx';
 
-export default function StatusTray({ statuses, me, onCreateStatus }) {
+export default function StatusTray({ statuses, me, onCreateStatus, onDeleteStatus }) {
   const [viewerBundle, setViewerBundle] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const meId = me?._id;
@@ -79,7 +79,14 @@ export default function StatusTray({ statuses, me, onCreateStatus }) {
         onClose={() => setCreateOpen(false)}
         onSubmit={onCreateStatus}
       />
-      {viewerBundle && <StatusViewer bundle={viewerBundle} onClose={() => setViewerBundle(null)} />}
+      {viewerBundle && (
+        <StatusViewer
+          bundle={viewerBundle}
+          meId={meId}
+          onClose={() => setViewerBundle(null)}
+          onDeleteStatus={onDeleteStatus}
+        />
+      )}
     </>
   );
 }

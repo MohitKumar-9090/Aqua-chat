@@ -225,3 +225,84 @@ video {
 .animate-safe-rotate {
   animation: safeRotate 3.5s ease-in-out infinite;
 }
+
+html.theme-dark,
+html.theme-dark body {
+  color: #e9edef;
+  background: #0b141a;
+}
+
+.theme-dark {
+  color: #e9edef;
+}
+
+.theme-dark [class*="bg-white"],
+.theme-dark .settings-panel,
+.theme-dark .settings-row,
+.theme-dark .settings-input,
+.theme-dark .settings-action,
+.theme-dark .settings-card {
+  background-color: #111b21 !important;
+}
+
+.theme-dark [class*="from-white"],
+.theme-dark [class*="to-aqua-25"] {
+  --tw-gradient-from: #111b21 var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: #0b141a var(--tw-gradient-to-position) !important;
+}
+
+.theme-dark [class*="bg-aqua-25"],
+.theme-dark [class*="bg-aqua-50"],
+.theme-dark [class*="bg-aqua-100"],
+.theme-dark [class*="bg-cyan-50"],
+.theme-dark .settings-card,
+.theme-dark .settings-message {
+  background-color: #202c33 !important;
+}
+
+.theme-dark [class*="border-aqua"],
+.theme-dark [class*="border-white"],
+.theme-dark [class*="border-slate"] {
+  border-color: #2a3942 !important;
+}
+
+.theme-dark [class*="text-cyan-950"],
+.theme-dark [class*="text-cyan-900"],
+.theme-dark [class*="text-cyan-800"],
+.theme-dark [class*="text-cyan-700"],
+.theme-dark [class*="text-slate-700"],
+.theme-dark [class*="text-slate-600"],
+.theme-dark [class*="text-slate-500"] {
+  color: #e9edef !important;
+}
+
+.theme-dark [class*="text-slate-400"],
+.theme-dark input::placeholder,
+.theme-dark textarea::placeholder {
+  color: #8696a0 !important;
+}
+
+.theme-dark .message-texture {
+  background-color: #0b141a;
+  background-image:
+    linear-gradient(135deg, rgba(134, 150, 160, 0.05) 25%, transparent 25%),
+    linear-gradient(225deg, rgba(134, 150, 160, 0.05) 25%, transparent 25%),
+    linear-gradient(45deg, rgba(134, 150, 160, 0.05) 25%, transparent 25%),
+    linear-gradient(315deg, rgba(134, 150, 160, 0.05) 25%, transparent 25%);
+}
+
+.theme-dark input,
+.theme-dark textarea {
+  color: #e9edef;
+  caret-color: #00a884;
+}
+
+.theme-dark button:hover {
+  background-color: rgba(42, 57, 66, 0.9);
+}
+
+.theme-dark [class*="shadow-soft"] {
+  --tw-shadow-color: rgba(0, 0, 0, 0.32) !important;
+  --tw-shadow: 0 10px 34px rgba(0, 0, 0, 0.32) !important;
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow) !important;
+}

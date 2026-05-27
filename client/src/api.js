@@ -90,6 +90,10 @@ const currentUid = () => {
 
 const presentUser = (id, data = {}) => {
   const cleanId = String(id || '').trim();
+  const settings = data.settings && typeof data.settings === 'object' ? data.settings : {};
+  const statusPrivacy = settings.statusPrivacy && typeof settings.statusPrivacy === 'object'
+    ? settings.statusPrivacy
+    : {};
   return {
     _id: cleanId,
     uid: cleanId,
@@ -104,11 +108,21 @@ const presentUser = (id, data = {}) => {
     profilePic: data.photoURL || data.profilePic || '',
     profilePicture: data.photoURL || data.profilePicture || '',
     bio: data.bio || 'Hey there! I am using AquaChat.',
+    about: data.about || data.bio || 'Hey there! I am using AquaChat.',
     verified: Boolean(data.verified),
     isOnline: Boolean(data.isOnline || data.online),
     lastSeen: safeIsoString(data.lastSeen) || '',
     connectionStatus: data.connectionStatus || 'none',
     connections: (data.connections || []).map(cId => String(cId || '').trim()),
+    settings: {
+      theme: settings.theme === 'dark' ? 'dark' : 'light',
+      statusPrivacy: {
+        mode: ['everyone', 'connections', 'selected'].includes(statusPrivacy.mode) ? statusPrivacy.mode : 'everyone',
+        selectedIds: Array.isArray(statusPrivacy.selectedIds)
+          ? statusPrivacy.selectedIds.map((uid) => String(uid || '').trim()).filter(Boolean)
+          : []
+      }
+    },
     isFollowing: Boolean(data.isFollowing),
     followsMe: Boolean(data.followsMe)
   };
@@ -155,6 +169,15 @@ const readUserCached = async (uid) => {
   const user = await readUser(uid);
   if (user) userCache.set(uid, user);
   return user;
+};
+
+const normalizeUid = (uid) => String(uid || '').trim();
+
+const readUsersByIds = async (ids = []) => {
+  const cleanIds = [...new Set(ids.map(normalizeUid).filter(Boolean))];
+  if (!cleanIds.length) return [];
+  const users = await Promise.all(cleanIds.map((id) => readUserCached(id)));
+  return users.filter(Boolean);
 };
 
 const uploadFileWithTimeout = async (ref, file, { onProgress, timeoutMs = 45000 } = {}) => {
@@ -795,8 +818,9 @@ export const setTyping = (chatId, isTyping) => {
 };
 
 export const canContactUser = (blockState, peerId) => {
-  if (!peerId || !blockState) return true;
-  return !blockState.blocked?.has(peerId) && !blockState.blockedBy?.has(peerId);
+  const cleanPeerId = normalizeUid(peerId);
+  if (!cleanPeerId || !blockState) return true;
+  return !blockState.blocked?.has(cleanPeerId) && !blockState.blockedBy?.has(cleanPeerId);
 };
 
 export const subscribeBlockState = (uid, handler) => {
@@ -805,11 +829,11 @@ export const subscribeBlockState = (uid, handler) => {
   const emit = () => handler({ blocked: new Set(state.blocked), blockedBy: new Set(state.blockedBy) });
 
   const unsubBlocked = onSnapshot(collection(firestore, 'users', uid, 'blocked'), (snap) => {
-    state.blocked = new Set(snap.docs.map((docSnap) => docSnap.id));
+    state.blocked = new Set(snap.docs.map((docSnap) => normalizeUid(docSnap.id)));
     emit();
   });
   const unsubBlockedBy = onSnapshot(collection(firestore, 'users', uid, 'blockedBy'), (snap) => {
-    state.blockedBy = new Set(snap.docs.map((docSnap) => docSnap.id));
+    state.blockedBy = new Set(snap.docs.map((docSnap) => normalizeUid(docSnap.id)));
     emit();
   });
 
@@ -828,29 +852,60 @@ const assertContactAllowed = async (transaction, uid, otherUids) => {
   }
 };
 
+const ensureContactAllowed = async (uidInput, otherUidInput) => {
+  const uid = normalizeUid(uidInput);
+  const otherUid = normalizeUid(otherUidInput);
+  if (!uid || !otherUid || uid === otherUid) return;
+  const [theyBlock, iBlock] = await Promise.all([
+    getDoc(doc(firestore, 'users', otherUid, 'blocked', uid)),
+    getDoc(doc(firestore, 'users', uid, 'blocked', otherUid))
+  ]);
+  if (theyBlock.exists()) throw new Error('You cannot contact this user.');
+  if (iBlock.exists()) throw new Error('Unblock this user to continue.');
+};
+
 export const api = {
   sync: async (body = {}) => {
     const user = auth.currentUser;
     if (!user) throw new Error('You must be logged in.');
+    const userRef = doc(firestore, 'users', user.uid);
+    const existing = await getDoc(userRef);
+    const existingData = existing.exists() ? existing.data() : null;
     const pendingName = body.name || body.displayName || user.displayName;
-    const profile = {
+    const defaults = {
       displayName: pendingName || user.email || user.phoneNumber || 'AquaChat user',
       username: cleanUsername(body.username || user.email?.split('@')[0] || user.phoneNumber || `user_${user.uid.slice(0, 6)}`),
       email: normalize(user.email || body.email),
       phoneNumber: (user.phoneNumber || body.phoneNumber || body.phone || '').trim(),
       photoURL: body.photoURL || body.profilePicture || user.photoURL || '',
       bio: body.bio || 'Hey there! I am using AquaChat.',
-      updatedAt: serverTimestamp()
+      settings: {
+        theme: 'light',
+        statusPrivacy: {
+          mode: 'everyone',
+          selectedIds: []
+        }
+      }
     };
+    const profile = existingData
+      ? {
+          email: existingData.email || normalize(user.email || body.email),
+          phoneNumber: existingData.phoneNumber || (user.phoneNumber || body.phoneNumber || body.phone || '').trim(),
+          settings: existingData.settings || defaults.settings,
+          updatedAt: serverTimestamp()
+        }
+      : {
+          ...defaults,
+          updatedAt: serverTimestamp(),
+          createdAt: serverTimestamp()
+        };
+    const keywordSource = existingData ? { ...existingData, ...profile } : profile;
 
-    const userRef = doc(firestore, 'users', user.uid);
-    const existing = await getDoc(userRef);
     await setDoc(
       userRef,
       {
         ...profile,
-        searchableKeywords: buildKeywords(profile),
-        ...(existing.exists() ? {} : { createdAt: serverTimestamp() })
+        searchableKeywords: buildKeywords(keywordSource)
       },
       { merge: true }
     );
@@ -862,7 +917,7 @@ export const api = {
 
   updateProfile: async (body = {}) => {
     const uid = currentUid();
-    const current = await readUser(uid);
+    const current = await readUser(uid) || {};
     const updates = {
       displayName: body.name !== undefined ? body.name : (body.displayName !== undefined ? body.displayName : current.displayName),
       username: body.username !== undefined ? cleanUsername(body.username) : current.username,
@@ -870,6 +925,7 @@ export const api = {
       phoneNumber: body.phone !== undefined ? body.phone : (body.phoneNumber !== undefined ? body.phoneNumber : current.phoneNumber),
       email: body.email !== undefined ? normalize(body.email) : current.email,
       bio: body.bio !== undefined ? body.bio : current.bio,
+      about: body.about !== undefined ? body.about : (body.bio !== undefined ? body.bio : current.about),
       updatedAt: serverTimestamp()
     };
     await updateDoc(doc(firestore, 'users', uid), {
@@ -881,6 +937,58 @@ export const api = {
     userCache.set(uid, merged);
     return { user: merged };
   },
+
+  updateSettings: async (settings = {}) => {
+    const uid = currentUid();
+    const current = await readUser(uid) || {};
+    const currentSettings = current?.settings || {};
+    const statusPrivacy = settings.statusPrivacy || currentSettings.statusPrivacy || {};
+    const nextSettings = {
+      ...currentSettings,
+      ...settings,
+      theme: settings.theme === 'dark' ? 'dark' : (settings.theme === 'light' ? 'light' : currentSettings.theme || 'light'),
+      statusPrivacy: {
+        mode: ['everyone', 'connections', 'selected'].includes(statusPrivacy.mode) ? statusPrivacy.mode : 'everyone',
+        selectedIds: Array.isArray(statusPrivacy.selectedIds)
+          ? statusPrivacy.selectedIds.map(normalizeUid).filter(Boolean)
+          : []
+      }
+    };
+    await updateDoc(doc(firestore, 'users', uid), {
+      settings: nextSettings,
+      updatedAt: serverTimestamp()
+    });
+    const merged = presentUser(uid, { ...current, settings: nextSettings });
+    userCache.set(uid, merged);
+    return { user: merged };
+  },
+
+  updateTheme: async (theme) => api.updateSettings({ theme }),
+
+  updateStatusPrivacy: async ({ mode, selectedIds = [] }) => {
+    const uid = currentUid();
+    const cleanMode = ['everyone', 'connections', 'selected'].includes(mode) ? mode : 'everyone';
+    const cleanSelectedIds = selectedIds.map(normalizeUid).filter(Boolean);
+    const current = await readUser(uid);
+    const result = await api.updateSettings({
+      ...(current?.settings || {}),
+      statusPrivacy: { mode: cleanMode, selectedIds: cleanSelectedIds }
+    });
+    const activeStatuses = await getDocs(query(collection(firestore, 'statuses'), where('userId', '==', uid), limit(30)));
+    if (!activeStatuses.empty) {
+      const batch = writeBatch(firestore);
+      activeStatuses.docs.forEach((statusDoc) => {
+        batch.update(statusDoc.ref, {
+          visibility: cleanMode,
+          selectedViewerIds: cleanMode === 'selected' ? cleanSelectedIds : []
+        });
+      });
+      await batch.commit();
+    }
+    return result;
+  },
+
+  usersByIds: async (ids = []) => ({ users: await readUsersByIds(ids) }),
 
   users: async (search = '') => {
     const uid = currentUid();
@@ -949,6 +1057,7 @@ export const api = {
     const uid = currentUid();
     const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot message yourself.');
+    await ensureContactAllowed(uid, userId);
     const chatId = directChatId(uid, userId);
     const ref = doc(firestore, 'chats', chatId);
     await setDoc(ref, {
@@ -1164,6 +1273,15 @@ export const api = {
   sendMessage: async ({ chatId, sender: senderInput, ...payload }) => {
     const uid = currentUid();
     const chatRef = doc(firestore, 'chats', chatId);
+    const chatSnap = await getDoc(chatRef);
+    if (!chatSnap.exists()) throw new Error('Chat not found.');
+    const chatData = chatSnap.data();
+    const participantIds = (chatData.participantIds || []).map(normalizeUid);
+    if (!participantIds.includes(uid)) throw new Error('You do not have access to this chat.');
+    if (chatData.type === 'direct') {
+      const peerId = participantIds.find((id) => id !== uid);
+      if (peerId) await ensureContactAllowed(uid, peerId);
+    }
     const messageRef = doc(collection(firestore, 'chats', chatId, 'messages'));
     const sender = senderInput || (await readUserCached(uid));
     const clientCreatedAt = Date.now();
@@ -1319,8 +1437,6 @@ export const api = {
     const userRef = doc(firestore, 'users', uid);
     const userData = {
       photoURL: url,
-      profilePic: url,
-      profilePicture: url,
       updatedAt: serverTimestamp()
     };
 
@@ -1340,9 +1456,7 @@ export const api = {
       user: {
         _id: uid,
         firebaseUid: uid,
-        photoURL: url,
-        profilePic: url,
-        profilePicture: url
+        photoURL: url
       }
     };
   },
@@ -1446,6 +1560,8 @@ export const api = {
 
   createStatus: async (body) => {
     const uid = currentUid();
+    const user = await readUser(uid);
+    const statusPrivacy = user?.settings?.statusPrivacy || { mode: 'everyone', selectedIds: [] };
     const expiresAtDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const expiresAt = Timestamp.fromDate(expiresAtDate);
     const payload = {
@@ -1455,6 +1571,9 @@ export const api = {
       caption: body.statusText || body.caption || '',
       mediaUrl: body.statusMedia || body.mediaUrl || '',
       userId: uid,
+      ownerId: uid,
+      visibility: statusPrivacy.mode || 'everyone',
+      selectedViewerIds: statusPrivacy.mode === 'selected' ? (statusPrivacy.selectedIds || []).map(normalizeUid).filter(Boolean) : [],
       createdAt: serverTimestamp(),
       expiresAt,
       seenBy: []
@@ -1476,10 +1595,25 @@ export const api = {
     return { ok: true };
   },
 
+  deleteStatus: async (statusIdInput) => {
+    const uid = currentUid();
+    const statusId = String(statusIdInput || '').trim();
+    if (!statusId) throw new Error('Missing status id.');
+    const statusRef = doc(firestore, 'statuses', statusId);
+    const snap = await getDoc(statusRef);
+    if (!snap.exists()) return { ok: true };
+    const data = snap.data();
+    const owner = normalizeUid(data.ownerId || data.userId || data.user?.uid || data.user?._id);
+    if (owner !== uid) throw new Error('You can delete only your own status.');
+    await deleteDoc(statusRef);
+    return { ok: true };
+  },
+
   connectUser: async (userIdInput) => {
     const uid = currentUid();
     const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot connect with yourself.');
+    await ensureContactAllowed(uid, userId);
     await updateDoc(doc(firestore, 'users', uid), { connections: arrayUnion(userId) });
     const { chat } = await api.createDirectChat(userId);
     return { status: 'connected', chatId: chat._id, chat };
@@ -1488,6 +1622,7 @@ export const api = {
     const uid = currentUid();
     const userId = String(userIdInput || '').trim();
     if (userId === uid) throw new Error('You cannot connect with yourself.');
+    await ensureContactAllowed(uid, userId);
     const requestId = `${uid}_${userId}`;
     await setDoc(doc(firestore, 'connectionRequests', requestId), {
       senderId: uid,
@@ -1618,13 +1753,14 @@ export const api = {
 
   blockUser: async (blockedUid) => {
     const uid = currentUid();
-    if (blockedUid === uid) throw new Error('You cannot block yourself.');
+    const blockedId = normalizeUid(blockedUid);
+    if (blockedId === uid) throw new Error('You cannot block yourself.');
     const batch = writeBatch(firestore);
-    batch.set(doc(firestore, 'users', uid, 'blocked', blockedUid), {
-      blockedUid,
+    batch.set(doc(firestore, 'users', uid, 'blocked', blockedId), {
+      blockedUid: blockedId,
       blockedAt: serverTimestamp()
     });
-    batch.set(doc(firestore, 'users', blockedUid, 'blockedBy', uid), {
+    batch.set(doc(firestore, 'users', blockedId, 'blockedBy', uid), {
       blockerId: uid,
       blockedAt: serverTimestamp()
     });
@@ -1634,11 +1770,29 @@ export const api = {
 
   unblockUser: async (blockedUid) => {
     const uid = currentUid();
+    const blockedId = normalizeUid(blockedUid);
     const batch = writeBatch(firestore);
-    batch.delete(doc(firestore, 'users', uid, 'blocked', blockedUid));
-    batch.delete(doc(firestore, 'users', blockedUid, 'blockedBy', uid));
+    batch.delete(doc(firestore, 'users', uid, 'blocked', blockedId));
+    batch.delete(doc(firestore, 'users', blockedId, 'blockedBy', uid));
     await batch.commit();
     return { ok: true };
+  },
+
+  subscribeBlockedUsers: (uidInput, handler) => {
+    const uid = normalizeUid(uidInput);
+    if (!uid) return () => {};
+    return onSnapshot(collection(firestore, 'users', uid, 'blocked'), async (snap) => {
+      const rows = await Promise.all(snap.docs.map(async (docSnap) => {
+        const blockedUid = normalizeUid(docSnap.id || docSnap.data()?.blockedUid);
+        const user = await readUserCached(blockedUid);
+        return {
+          _id: blockedUid,
+          blockedAt: safeIsoString(docSnap.data()?.blockedAt),
+          user: user || { _id: blockedUid, displayName: 'AquaChat user', username: '' }
+        };
+      }));
+      handler(rows.filter((row) => row._id));
+    });
   },
 
   isUserBlocked: async (blockedUid) => {

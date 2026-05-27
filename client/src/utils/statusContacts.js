@@ -15,7 +15,31 @@ export const buildStatusContactIds = (meId, chats = [], connections = []) => {
   return ids;
 };
 
-export const filterStatusesForContacts = (statuses = [], contactIds) => {
-  if (!contactIds?.size) return [];
-  return statuses.filter((status) => contactIds.has(status.userId || status.user?._id));
+const normalizeUid = (uid) => String(uid || '').trim();
+
+const canViewStatus = (status, meId, contactIds) => {
+  const ownerId = normalizeUid(status.ownerId || status.userId || status.user?._id || status.user?.uid);
+  const viewerId = normalizeUid(meId);
+  if (!ownerId || !viewerId) return false;
+  if (ownerId === viewerId) return true;
+
+  const privacy = status.user?.settings?.statusPrivacy || {};
+  const mode = status.visibility || privacy.mode || 'everyone';
+  const selectedIds = status.selectedViewerIds || privacy.selectedIds || [];
+
+  if (mode === 'selected') {
+    return selectedIds.map(normalizeUid).includes(viewerId);
+  }
+
+  if (mode === 'connections') {
+    const ownerConnections = (status.user?.connections || []).map(normalizeUid);
+    return ownerConnections.includes(viewerId) || Boolean(contactIds?.has(ownerId));
+  }
+
+  return true;
+};
+
+export const filterStatusesForContacts = (statuses = [], contactIds, meId) => {
+  if (!meId) return [];
+  return statuses.filter((status) => canViewStatus(status, meId, contactIds));
 };

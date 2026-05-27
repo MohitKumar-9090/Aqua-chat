@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { api } from '../../api.js';
 import { markStatusViewedLocal } from '../../utils/statusViewed.js';
 
-export default function StatusViewer({ bundle, onClose }) {
+export default function StatusViewer({ bundle, meId, onClose, onDeleteStatus }) {
   const [index, setIndex] = useState(0);
-  const items = bundle?.items || [];
+  const [deletedIds, setDeletedIds] = useState(() => new Set());
+  const items = (bundle?.items || []).filter((item) => !deletedIds.has(item._id));
   const current = items[index];
 
   useEffect(() => {
     setIndex(0);
+    setDeletedIds(new Set());
   }, [bundle?.userId]);
 
   useEffect(() => {
@@ -38,6 +40,17 @@ export default function StatusViewer({ bundle, onClose }) {
   const goNext = () => {
     if (index < items.length - 1) setIndex((i) => i + 1);
     else onClose();
+  };
+  const mine = String(bundle.userId || '').trim() === String(meId || '').trim();
+  const deleteCurrent = async () => {
+    if (!current?._id || !mine) return;
+    await onDeleteStatus?.(current._id);
+    setDeletedIds((currentIds) => new Set([...currentIds, current._id]));
+    if (items.length <= 1) {
+      onClose();
+      return;
+    }
+    setIndex((value) => Math.min(value, items.length - 2));
   };
 
   return (
@@ -68,6 +81,11 @@ export default function StatusViewer({ bundle, onClose }) {
         <button type="button" onClick={onClose} className="rounded-full p-2 text-white/90 hover:bg-white/10">
           <X size={22} />
         </button>
+        {mine && (
+          <button type="button" onClick={deleteCurrent} className="rounded-full p-2 text-white/90 hover:bg-white/10" title="Delete status">
+            <Trash2 size={20} />
+          </button>
+        )}
       </div>
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center">

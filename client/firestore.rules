@@ -111,9 +111,23 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn() &&
         request.resource.data.userId == request.auth.uid &&
+        (!('ownerId' in request.resource.data) || request.resource.data.ownerId == request.auth.uid) &&
         request.resource.data.expiresAt is timestamp;
       allow update: if signedIn() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy']);
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy']) ||
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['visibility', 'selectedViewerIds']) &&
+            (
+              resource.data.userId == request.auth.uid ||
+              ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
+            )
+          )
+        );
+      allow delete: if signedIn() && (
+        resource.data.userId == request.auth.uid ||
+        ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
+      );
     }
   }
 }
