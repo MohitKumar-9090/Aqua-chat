@@ -343,6 +343,58 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     [statuses, statusContactIds, profile?._id]
   );
 
+  const consolidatedChats = useMemo(() => {
+    const seen = new Map();
+    
+    // Sort chats by updatedAt (latest first) so we iterate latest chats first
+    const sortedChats = [...chats].sort((a, b) => {
+      const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    for (const chat of sortedChats) {
+      let key;
+      if (chat.type === 'group') {
+        key = `group_${chat._id}`;
+      } else {
+        // Direct chat: key by the other participant's ID
+        const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim()) 
+          || chat.participants?.find((p) => String(p.user?._id || p.user?.uid).trim() !== String(profile?._id).trim())?.user?._id;
+        
+        if (otherId) {
+          key = `direct_${String(otherId).trim()}`;
+        } else {
+          key = `chat_${chat._id}`;
+        }
+      }
+
+      if (!seen.has(key)) {
+        seen.set(key, { ...chat });
+      } else {
+        const existing = seen.get(key);
+        // Sum unread count
+        existing.unreadCount = (existing.unreadCount || 0) + (chat.unreadCount || 0);
+        
+        // If duplicate has newer last message, update it
+        const existingTime = existing.lastMessage?.createdAt ? new Date(existing.lastMessage.createdAt).getTime() : 0;
+        const chatTime = chat.lastMessage?.createdAt ? new Date(chat.lastMessage.createdAt).getTime() : 0;
+        if (chatTime > existingTime) {
+          existing.lastMessage = chat.lastMessage;
+        }
+        
+        // Keep the latest updatedAt
+        const existingUpdate = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+        const chatUpdate = chat.updatedAt ? new Date(chat.updatedAt).getTime() : 0;
+        if (chatUpdate > existingUpdate) {
+          existing.updatedAt = chat.updatedAt;
+        }
+      }
+    }
+    
+    return [...seen.values()];
+  }, [chats, profile?._id]);
+
   const theme = profile?.settings?.theme === 'dark' ? 'dark' : 'light';
 
   useEffect(() => {
@@ -389,8 +441,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   useEffect(() => {
-    const unsubscribe = api.subscribeStatuses(setStatuses);
-    return () => unsubscribe?.();
+    let unsubscribe;
+    const timer = setTimeout(() => {
+      unsubscribe = api.subscribeStatuses(setStatuses);
+    }, 2000); // Defer by 2 seconds to prioritize core startup UI
+    return () => {
+      clearTimeout(timer);
+      unsubscribe?.();
+    };
   }, []);
 
   // Eagerly pre-load call module and prefetch ICE servers to eliminate cold-start delay
@@ -588,27 +646,36 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setTyping(null);
   };
 
-  useEffect(() => {
-    const cancel = scheduleIdle(() => {
-      refreshStatuses().catch(console.error);
-    });
-    return cancel;
-  }, []);
+  // Redundant idle fetch removed as api.subscribeStatuses already resolves statuses immediately on mount.
 
   const presenceRef = useRef({});
 
   useEffect(() => {
     const uid = profile?._id || firebaseUser?.uid;
     if (!uid) return undefined;
-    return subscribeBlockState(uid, setBlockState);
+    let unsubscribe;
+    const timer = setTimeout(() => {
+      unsubscribe = subscribeBlockState(uid, setBlockState);
+    }, 1000); // Defer block state loading by 1 second
+    return () => {
+      clearTimeout(timer);
+      unsubscribe?.();
+    };
   }, [profile?._id, firebaseUser?.uid]);
 
   useEffect(() => {
     const uid = profile?._id || firebaseUser?.uid;
     if (!uid) return undefined;
-    return api.subscribeConnectionRequests(uid, (data) => {
-      setConnectionRequests(data);
-    });
+    let unsubscribe;
+    const timer = setTimeout(() => {
+      unsubscribe = api.subscribeConnectionRequests(uid, (data) => {
+        setConnectionRequests(data);
+      });
+    }, 2500); // Defer connection requests loading by 2.5 seconds
+    return () => {
+      clearTimeout(timer);
+      unsubscribe?.();
+    };
   }, [profile?._id, firebaseUser?.uid]);
 
   useEffect(() => {
@@ -677,20 +744,27 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [blockState]);
 
   useEffect(() => {
-    const unsubscribePresence = subscribePresence((presence) => {
-      presenceRef.current = presence;
-      setUsers((current) => applyPresenceToUsers(current, presence));
-      setChats((current) => applyPresenceToChats(current, presence));
-    });
-
+    if (!profile?._id) return undefined;
     const unsubscribeChats = subscribeChats((nextChats) => {
       setChats(applyPresenceToChats(nextChats, presenceRef.current));
       maybeAutoSelectChat(nextChats);
     });
+    return () => unsubscribeChats?.();
+  }, [profile?._id]);
 
+  useEffect(() => {
+    if (!profile?._id) return undefined;
+    let unsubscribePresence;
+    const timer = setTimeout(() => {
+      unsubscribePresence = subscribePresence((presence) => {
+        presenceRef.current = presence;
+        setUsers((current) => applyPresenceToUsers(current, presence));
+        setChats((current) => applyPresenceToChats(current, presence));
+      });
+    }, 1500); // Defer presence sync by 1.5 seconds to ensure fast initial chat hydration
     return () => {
+      clearTimeout(timer);
       unsubscribePresence?.();
-      unsubscribeChats?.();
     };
   }, [profile?._id]);
 
@@ -2245,13 +2319,18 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           {/* Chat/People List */}
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-2 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] sm:pb-3">
             {panel === 'chats' ? (
-              chats.length > 0 ? (
-                chats.map((chat) => (
+              consolidatedChats.length > 0 ? (
+                consolidatedChats.map((chat) => (
                   <button 
                     key={chat._id} 
                     onClick={() => {
                       setSelectedChat(chat);
-                      setChats((current) => current.map((item) => (item._id === chat._id ? { ...item, unreadCount: 0 } : item)));
+                      const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+                      setChats((current) => current.map((item) => {
+                        const itemOtherId = item.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+                        const isMatch = item._id === chat._id || (chat.type === 'direct' && item.type === 'direct' && itemOtherId === otherId);
+                        return isMatch ? { ...item, unreadCount: 0 } : item;
+                      }));
                     }} 
                     onMouseDown={() => handleChatTouchStart(chat)}
                     onMouseUp={() => handleChatTouchEnd(chat)}

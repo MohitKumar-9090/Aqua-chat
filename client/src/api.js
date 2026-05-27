@@ -160,7 +160,7 @@ const userCache = {
   get(uid) {
     const entry = this.store.get(uid);
     if (!entry) return null;
-    if (Date.now() - entry.timestamp > 180000) { // 3 minutes TTL
+    if (Date.now() - entry.timestamp > 3600000) { // 1 hour TTL
       this.store.delete(uid);
       return null;
     }
@@ -172,7 +172,7 @@ const userCache = {
   has(uid) {
     const entry = this.store.get(uid);
     if (!entry) return false;
-    if (Date.now() - entry.timestamp > 180000) {
+    if (Date.now() - entry.timestamp > 3600000) { // 1 hour TTL
       this.store.delete(uid);
       return false;
     }

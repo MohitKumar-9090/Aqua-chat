@@ -284,7 +284,7 @@ function CallModal({
       type="button"
       onClick={onClick}
       title={title}
-      className={`grid h-14 w-14 place-items-center rounded-full transition duration-200 sm:h-16 sm:w-16 ${
+      className={`grid h-11 w-11 min-[375px]:h-12 min-[375px]:w-12 min-[410px]:h-14 min-[410px]:w-14 place-items-center rounded-full transition duration-200 sm:h-16 sm:w-16 ${
         active ? 'bg-white/25 text-white hover:bg-white/35' : 'bg-white/15 text-white hover:bg-white/25'
       }`}
     >
@@ -420,7 +420,7 @@ function CallModal({
                   className={
                     minimized
                       ? "absolute bottom-2 right-2 z-10 h-14 w-10 rounded-lg border border-white/40 object-cover shadow-lg"
-                      : "absolute bottom-3 right-3 z-10 h-28 w-20 rounded-xl border-2 border-white/30 object-cover shadow-2xl sm:h-32 sm:w-24"
+                      : "absolute bottom-28 right-3 min-[375px]:bottom-32 min-[375px]:right-4 z-10 h-28 w-20 rounded-xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-36 sm:right-4 sm:h-32 sm:w-24"
                   }
                 />
               )}
@@ -535,7 +535,7 @@ function CallModal({
               className={
                 minimized
                   ? "absolute bottom-2 right-2 z-10 h-14 w-10 rounded-lg border border-white/40 object-cover shadow-lg"
-                  : "absolute bottom-3 right-3 z-10 h-28 w-20 rounded-xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-4 sm:right-4 sm:h-32 sm:w-24"
+                  : "absolute bottom-28 right-3 min-[375px]:bottom-32 min-[375px]:right-4 z-10 h-28 w-20 rounded-xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-36 sm:right-4 sm:h-32 sm:w-24"
               }
             />
           )}
@@ -566,13 +566,13 @@ function CallModal({
         )}
 
         {!minimized && (
-          <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-12 flex flex-col items-center">
+          <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-10 sm:pb-8 flex flex-col items-center">
             {state.incoming && !state.preparing && (
               <div className="mb-4 flex justify-center gap-4">
                 <button
                   type="button"
                   onClick={onEnd}
-                  className="rounded-full bg-gradient-to-r from-rose-500 to-rose-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-rose-900/40"
+                  className="rounded-full bg-gradient-to-r from-rose-50 to-rose-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-rose-900/40"
                 >
                   Decline
                 </button>
@@ -588,52 +588,52 @@ function CallModal({
             )}
 
             {showControls && (
-              <div className="mx-auto flex max-w-md items-center justify-center gap-4 rounded-full bg-black/40 px-5 py-4 backdrop-blur-md sm:gap-6 sm:px-8">
+              <div className="mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full bg-black/40 px-3 py-3 min-[375px]:gap-3 min-[375px]:px-4 min-[410px]:gap-4 min-[410px]:px-5 min-[410px]:py-4 sm:gap-6 sm:px-8">
                 {controlBtn(
                   muted,
                   onToggleMute,
                   muted ? 'Unmute' : 'Mute',
-                  muted ? <MicOff size={24} /> : <Mic size={24} />
+                  muted ? <MicOff className="h-5 w-5 sm:h-6 sm:w-6" /> : <Mic className="h-5 w-5 sm:h-6 sm:w-6" />
                 )}
                 {isVideo &&
                   controlBtn(
                     cameraOff,
                     onToggleCamera,
                     cameraOff ? 'Turn camera on' : 'Turn camera off',
-                    cameraOff ? <VideoOff size={24} /> : <Video size={24} />
+                    cameraOff ? <VideoOff className="h-5 w-5 sm:h-6 sm:w-6" /> : <Video className="h-5 w-5 sm:h-6 sm:w-6" />
                   )}
                 {isVideo && !cameraOff && onSwitchCamera &&
                   controlBtn(
                     false,
                     onSwitchCamera,
                     'Switch Camera',
-                    <SwitchCamera size={24} />
+                    <SwitchCamera className="h-5 w-5 sm:h-6 sm:w-6" />
                   )}
                 {controlBtn(
                   currentRoute === 'off',
                   () => setAudioMenuOpen(true),
                   'Audio Output',
-                  currentRoute === 'off' ? <VolumeX size={24} /> :
-                  currentRoute === 'earpiece' ? <Volume1 size={24} /> :
-                  <Volume2 size={24} />
+                  currentRoute === 'off' ? <VolumeX className="h-5 w-5 sm:h-6 sm:w-6" /> :
+                  currentRoute === 'earpiece' ? <Volume1 className="h-5 w-5 sm:h-6 sm:w-6" /> :
+                  <Volume2 className="h-5 w-5 sm:h-6 sm:w-6" />
                 )}
                 {onMinimize && !state.incoming && !state.preparing && (
                   <button
                     type="button"
                     onClick={handleMinimizeClick}
                     title="Minimize call"
-                    className="grid h-14 w-14 place-items-center rounded-full bg-white/15 text-white transition duration-200 hover:bg-white/25 sm:h-16 sm:w-16"
+                    className="grid h-11 w-11 min-[375px]:h-12 min-[375px]:w-12 min-[410px]:h-14 min-[410px]:w-14 place-items-center rounded-full bg-white/15 text-white transition duration-200 hover:bg-white/25 sm:h-16 sm:w-16"
                   >
-                    <Minimize2 size={24} />
+                    <Minimize2 className="h-5 w-5 sm:h-6 sm:w-6" />
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={onEnd}
                   title="End call"
-                  className="grid h-14 w-14 place-items-center rounded-full bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-900/50 transition hover:scale-105 sm:h-16 sm:w-16"
+                  className="grid h-11 w-11 min-[375px]:h-12 min-[375px]:w-12 min-[410px]:h-14 min-[410px]:w-14 place-items-center rounded-full bg-gradient-to-r from-rose-50 to-rose-400 text-white shadow-lg shadow-rose-900/50 transition hover:scale-105 sm:h-16 sm:w-16"
                 >
-                  <PhoneOff size={26} />
+                  <PhoneOff className="h-5.5 w-5.5 sm:h-7 sm:w-7" />
                 </button>
               </div>
             )}
@@ -691,7 +691,7 @@ function CallModal({
               className={
                 minimized
                   ? `absolute bottom-2 right-2 z-10 h-14 w-10 rounded-lg border border-white/40 object-cover shadow-lg ${cameraOff ? 'hidden' : ''}`
-                  : `absolute bottom-32 right-4 z-10 h-36 w-28 rounded-2xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-36 sm:h-44 sm:w-32 ${cameraOff ? 'hidden' : ''}`
+                  : `absolute bottom-28 right-3 min-[375px]:bottom-32 min-[375px]:right-4 z-10 h-36 w-28 rounded-2xl border-2 border-white/30 object-cover shadow-2xl sm:bottom-36 sm:h-44 sm:w-32 ${cameraOff ? 'hidden' : ''}`
               }
             />
             {minimized && state.muted && (
@@ -750,17 +750,14 @@ function CallModal({
               <p className="text-center text-xs text-cyan-200">Call duration</p>
             )}
           </div>
-        </div>
-      )}
-
-      {!minimized && (
-        <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-12 flex flex-col items-center">
+          {!minimized && (
+        <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-10 sm:pb-8 flex flex-col items-center">
           {state.incoming && !state.preparing && (
             <div className="mb-4 flex justify-center gap-4">
               <button
                 type="button"
                 onClick={onEnd}
-                className="rounded-full bg-gradient-to-r from-rose-500 to-rose-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-rose-900/40"
+                className="rounded-full bg-gradient-to-r from-rose-50 to-rose-400 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-rose-900/40"
               >
                 Decline
               </button>
@@ -776,55 +773,57 @@ function CallModal({
           )}
 
           {showControls && (
-            <div className="mx-auto flex max-w-md items-center justify-center gap-4 rounded-full bg-black/35 px-5 py-4 backdrop-blur-md sm:gap-6 sm:px-8">
+            <div className="mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full bg-black/35 px-3 py-3 min-[375px]:gap-3 min-[375px]:px-4 min-[410px]:gap-4 min-[410px]:px-5 min-[410px]:py-4 sm:gap-6 sm:px-8">
               {controlBtn(
                 muted,
                 onToggleMute,
                 muted ? 'Unmute' : 'Mute',
-                muted ? <MicOff size={24} /> : <Mic size={24} />
+                muted ? <MicOff className="h-5 w-5 sm:h-6 sm:w-6" /> : <Mic className="h-5 w-5 sm:h-6 sm:w-6" />
               )}
               {isVideo &&
                 controlBtn(
                   cameraOff,
                   onToggleCamera,
                   cameraOff ? 'Turn camera on' : 'Turn camera off',
-                  cameraOff ? <VideoOff size={24} /> : <Video size={24} />
+                  cameraOff ? <VideoOff className="h-5 w-5 sm:h-6 sm:w-6" /> : <Video className="h-5 w-5 sm:h-6 sm:w-6" />
                 )}
               {isVideo && !cameraOff && onSwitchCamera &&
                 controlBtn(
                   false,
                   onSwitchCamera,
                   'Switch Camera',
-                  <SwitchCamera size={24} />
+                  <SwitchCamera className="h-5 w-5 sm:h-6 sm:w-6" />
                 )}
               {controlBtn(
                 currentRoute === 'off',
                 () => setAudioMenuOpen(true),
                 'Audio Output',
-                currentRoute === 'off' ? <VolumeX size={24} /> :
-                currentRoute === 'earpiece' ? <Volume1 size={24} /> :
-                <Volume2 size={24} />
+                currentRoute === 'off' ? <VolumeX className="h-5 w-5 sm:h-6 sm:w-6" /> :
+                currentRoute === 'earpiece' ? <Volume1 className="h-5 w-5 sm:h-6 sm:w-6" /> :
+                <Volume2 className="h-5 w-5 sm:h-6 sm:w-6" />
               )}
               {onMinimize && !state.incoming && !state.preparing && (
                 <button
                   type="button"
                   onClick={handleMinimizeClick}
                   title="Minimize call"
-                  className="grid h-14 w-14 place-items-center rounded-full bg-white/15 text-white transition duration-200 hover:bg-white/25 sm:h-16 sm:w-16"
+                  className="grid h-11 w-11 min-[375px]:h-12 min-[375px]:w-12 min-[410px]:h-14 min-[410px]:w-14 place-items-center rounded-full bg-white/15 text-white transition duration-200 hover:bg-white/25 sm:h-16 sm:w-16"
                 >
-                  <Minimize2 size={24} />
+                  <Minimize2 className="h-5 w-5 sm:h-6 sm:w-6" />
                 </button>
               )}
               <button
                 type="button"
                 onClick={onEnd}
                 title="End call"
-                className="grid h-14 w-14 place-items-center rounded-full bg-gradient-to-r from-rose-500 to-rose-400 text-white shadow-lg shadow-rose-900/50 transition hover:scale-105 sm:h-16 sm:w-16"
+                className="grid h-11 w-11 min-[375px]:h-12 min-[375px]:w-12 min-[410px]:h-14 min-[410px]:w-14 place-items-center rounded-full bg-gradient-to-r from-rose-50 to-rose-400 text-white shadow-lg shadow-rose-900/50 transition hover:scale-105 sm:h-16 sm:w-16"
               >
-                <PhoneOff size={26} />
+                <PhoneOff className="h-5.5 w-5.5 sm:h-7 sm:w-7" />
               </button>
             </div>
           )}
+        </div>
+      )}
         </div>
       )}
 
