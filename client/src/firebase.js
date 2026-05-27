@@ -29,6 +29,7 @@ export let realtimeDb = null;
 export let storage = null;
 export let googleProvider = null;
 export let initError = null;
+export let authPersistenceReady = Promise.resolve();
 
 try {
   validateClientEnv();
@@ -49,12 +50,15 @@ try {
     access_type: 'offline'
   });
   
-  // Enable persistent login sessions with a guard to ensure initialized only once
-  if (typeof window !== 'undefined' && !window.__firebaseAuthPersistenceSet) {
-    window.__firebaseAuthPersistenceSet = true;
-    setPersistence(auth, indexedDBLocalPersistence).catch(err => {
-      console.warn('Could not set persistence:', err.message);
-    });
+  // Enable persistent login sessions once and expose the promise so the app
+  // waits for persisted auth hydration before rendering protected screens.
+  if (typeof window !== 'undefined') {
+    if (!window.__firebaseAuthPersistencePromise) {
+      window.__firebaseAuthPersistencePromise = setPersistence(auth, indexedDBLocalPersistence).catch(err => {
+        console.warn('Could not set persistence:', err.message);
+      });
+    }
+    authPersistenceReady = window.__firebaseAuthPersistencePromise;
   }
 
 } catch (error) {

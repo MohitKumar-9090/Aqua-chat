@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getRedirectResult, onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth, isPasswordProvider } from '../firebase.js';
+import { auth, authPersistenceReady, isPasswordProvider } from '../firebase.js';
 import { api, primeUserCache } from '../api.js';
 import { stopPresenceSession } from '../services/presence.js';
 import { usePresenceSession } from './usePresenceSession.js';
@@ -67,6 +67,7 @@ export const useAuth = () => {
   const lastUidRef = useRef(null);
   const [error, setError] = useState('');
   const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
 
   // Synchronous recovery from localStorage for instant boot
   const getInitialSession = () => {
@@ -100,18 +101,11 @@ export const useAuth = () => {
     return null;
   };
 
-  const initialSession = getInitialSession();
   const initialProfile = getInitialProfile();
 
-  const [firebaseUser, setFirebaseUser] = useState(() => initialSession ? {
-    uid: initialSession.uid,
-    email: initialSession.email,
-    displayName: initialSession.displayName,
-    emailVerified: true
-  } : null);
-
+  const [firebaseUser, setFirebaseUser] = useState(null);
   const [profile, setProfile] = useState(() => initialProfile);
-  const [loading, setLoading] = useState(() => !initialSession);
+  const [loading, setLoading] = useState(true);
 
   const profileRef = useRef(initialProfile);
   profileRef.current = profile;
@@ -123,130 +117,152 @@ export const useAuth = () => {
   // Clean stale keys and set initial refs
   useEffect(() => {
     cleanOldCacheKeys();
-    if (initialSession?.uid) {
-      lastUidRef.current = initialSession.uid;
-    }
   }, []);
 
   useEffect(() => {
+    let unsubscribe = null;
+    let cancelled = false;
+
     if (!auth) {
+      setAuthReady(true);
       setLoading(false);
       return;
     }
 
-    getRedirectResult(auth).catch((err) => {
-      if (err.code !== 'auth/no-auth-event') {
-        setError(err.message || 'Google sign-in redirect failed.');
-      }
-    });
+    setLoading(true);
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setError('');
+    const attachAuthObserver = async () => {
+      await authPersistenceReady;
+      if (cancelled) return;
 
-      if (!user) {
-        if (lastUidRef.current) {
-          stopPresenceSession(lastUidRef.current).catch(console.error);
-          lastUidRef.current = null;
+      getRedirectResult(auth).catch((err) => {
+        if (err.code !== 'auth/no-auth-event') {
+          setError(err.message || 'Google sign-in redirect failed.');
         }
-        setFirebaseUser(null);
-        setProfile(null);
-        setNeedsEmailVerification(false);
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-        localStorage.removeItem(PROFILE_STORAGE_KEY);
-        setLoading(false);
-        return;
-      }
+      });
 
-      // Prevent repeated rehydration if user is already hydrated and active
-      if (user.uid === lastUidRef.current && profileRef.current) {
+      unsubscribe = onAuthStateChanged(auth, async (user) => {
+        if (cancelled) return;
+        setAuthReady(true);
+        setError('');
+
+        if (!user) {
+          if (lastUidRef.current) {
+            stopPresenceSession(lastUidRef.current).catch(console.error);
+            lastUidRef.current = null;
+          }
+          setFirebaseUser(null);
+          setProfile(null);
+          setNeedsEmailVerification(false);
+          localStorage.removeItem(SESSION_STORAGE_KEY);
+          localStorage.removeItem(PROFILE_STORAGE_KEY);
+          setLoading(false);
+          return;
+        }
+
+        // Prevent repeated rehydration after the real Firebase user is active.
+        if (user.uid === lastUidRef.current && profileRef.current) {
+          setFirebaseUser(user);
+          setLoading(false);
+          return;
+        }
+
         setFirebaseUser(user);
-        setLoading(false);
-        return;
-      }
+        setLoading(true);
+        setNeedsEmailVerification(isPasswordProvider(user) && !user.emailVerified);
 
-      setFirebaseUser(user);
-      setLoading(true);
-      setNeedsEmailVerification(isPasswordProvider(user) && !user.emailVerified);
+        if (isPasswordProvider(user) && !user.emailVerified) {
+          setProfile(null);
+          setLoading(false);
+          return;
+        }
 
-      if (isPasswordProvider(user) && !user.emailVerified) {
-        setProfile(null);
-        setLoading(false);
-        return;
-      }
+        lastUidRef.current = user.uid;
 
-      lastUidRef.current = user.uid;
+        try {
+          // Hydrate from localStorage first to avoid flashes, but only after
+          // Firebase has confirmed the persisted user.
+          const cachedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
+          if (cachedProfileRaw) {
+            const cachedProfile = JSON.parse(cachedProfileRaw);
+            if (cachedProfile._id === user.uid) {
+              setProfile(cachedProfile);
+            }
+          }
 
-      try {
-        // Hydrate from localStorage first to avoid flashes
-        const cachedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
-        if (cachedProfileRaw) {
-          const cachedProfile = JSON.parse(cachedProfileRaw);
-          if (cachedProfile._id === user.uid) {
-            setProfile(cachedProfile);
+          const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
+          const { user: synced } = await api.sync({
+            name: pendingSignup?.name || user.displayName,
+            displayName: pendingSignup?.name || user.displayName,
+            username: pendingSignup?.username,
+            email: pendingSignup?.email || user.email,
+            profilePicture: user.photoURL,
+            photoURL: user.photoURL
+          });
+          localStorage.removeItem(PENDING_SIGNUP_KEY);
+
+          const pruned = pruneProfileForStorage(synced);
+
+          localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+            uid: user.uid,
+            timestamp: Date.now(),
+            email: user.email,
+            displayName: user.displayName
+          }));
+
+          localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(pruned));
+
+          setProfile(synced);
+          primeUserCache(synced);
+        } catch (err) {
+          const message = err.message || 'Could not load your profile.';
+          setError(message);
+
+          // Fallback to cache only for the Firebase-confirmed user.
+          try {
+            const cachedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
+            if (cachedProfile) {
+              const fallbackProfile = JSON.parse(cachedProfile);
+              if (fallbackProfile._id === user.uid) {
+                setProfile(fallbackProfile);
+                return;
+              }
+            }
+          } catch (cacheErr) {
+            // ignore
+          }
+
+          setProfile({
+            _id: user.uid,
+            firebaseUid: user.uid,
+            displayName: user.displayName || user.email || user.phoneNumber || 'AquaChat user',
+            username: '',
+            email: user.email || '',
+            phoneNumber: user.phoneNumber || '',
+            photoURL: user.photoURL || '',
+            bio: '',
+            isOnline: true,
+            lastSeen: new Date().toISOString()
+          });
+        } finally {
+          if (!cancelled) {
             setLoading(false);
           }
         }
+      });
+    };
 
-        const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
-        const { user: synced } = await api.sync({
-          name: pendingSignup?.name || user.displayName,
-          displayName: pendingSignup?.name || user.displayName,
-          username: pendingSignup?.username,
-          email: pendingSignup?.email || user.email,
-          profilePicture: user.photoURL,
-          photoURL: user.photoURL
-        });
-        localStorage.removeItem(PENDING_SIGNUP_KEY);
-
-        const pruned = pruneProfileForStorage(synced);
-
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-          uid: user.uid,
-          timestamp: Date.now(),
-          email: user.email,
-          displayName: user.displayName
-        }));
-
-        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(pruned));
-
-        setProfile(synced);
-        primeUserCache(synced);
-      } catch (err) {
-        const message = err.message || 'Could not load your profile.';
-        setError(message);
-
-        // Fallback to cache
-        try {
-          const cachedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
-          if (cachedProfile) {
-            const fallbackProfile = JSON.parse(cachedProfile);
-            if (fallbackProfile._id === user.uid) {
-              setProfile(fallbackProfile);
-              return;
-            }
-          }
-        } catch (cacheErr) {
-          // ignore
-        }
-
-        setProfile({
-          _id: user.uid,
-          firebaseUid: user.uid,
-          displayName: user.displayName || user.email || user.phoneNumber || 'AquaChat user',
-          username: '',
-          email: user.email || '',
-          phoneNumber: user.phoneNumber || '',
-          photoURL: user.photoURL || '',
-          bio: '',
-          isOnline: true,
-          lastSeen: new Date().toISOString()
-        });
-      } finally {
-        setLoading(false);
-      }
+    attachAuthObserver().catch((err) => {
+      if (cancelled) return;
+      setAuthReady(true);
+      setError(err.message || 'Could not initialize authentication.');
+      setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -266,7 +282,9 @@ export const useAuth = () => {
       firebaseUser,
       profile,
       setProfile,
-      loading,
+      loading: loading || !authReady,
+      authLoading: loading || !authReady,
+      authReady,
       error,
       needsEmailVerification,
       logout: async () => {
@@ -274,10 +292,10 @@ export const useAuth = () => {
         if (uid) await stopPresenceSession(uid);
         localStorage.removeItem(SESSION_STORAGE_KEY);
         localStorage.removeItem(PROFILE_STORAGE_KEY);
-        auth && signOut(auth);
+        if (auth) await signOut(auth);
       }
     }),
-    [firebaseUser, profile, loading, error, needsEmailVerification]
+    [firebaseUser, profile, loading, authReady, error, needsEmailVerification]
   );
 
   return value;
