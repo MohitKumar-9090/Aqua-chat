@@ -39,7 +39,7 @@ function PeopleSearchRow({ user, meId, statuses = [], connecting, onConnect, onA
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') handleMessage();
       }}
-      className="w-full cursor-pointer rounded-2xl border border-transparent p-3 text-left transition duration-200 hover:border-blush-100/50 hover:bg-blush-50/60"
+      className="people-row w-full cursor-pointer rounded-2xl border border-transparent p-3 text-left transition duration-200 hover:border-blush-100/50 hover:bg-blush-50/60"
     >
       <div className="flex items-start gap-3">
         <Avatar user={user} online={user.isOnline} statusRing={userHasUnviewedStatus(statuses, user._id, meId)} />

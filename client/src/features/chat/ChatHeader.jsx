@@ -35,11 +35,11 @@ function ChatHeader({
 
   if (searchOpen) {
     return (
-      <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-aqua-100/40 bg-white/95 px-2 py-2 backdrop-blur-sm sm:px-3">
+      <header className="chat-header chat-search-header sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-aqua-100/40 bg-white/95 px-2 py-2 backdrop-blur-sm sm:px-3">
         <button type="button" onClick={onSearchClose} className="rounded-2xl p-2.5 text-cyan-700 hover:bg-aqua-100/60">
           <ArrowLeft size={22} />
         </button>
-        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-aqua-200/70 bg-aqua-50/80 px-3 py-2">
+        <div className="chat-search-box flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-aqua-200/70 bg-aqua-50/80 px-3 py-2">
           <Search size={18} className="shrink-0 text-cyan-600" />
           <input
             value={searchQuery}
@@ -59,7 +59,7 @@ function ChatHeader({
   }
 
   return (
-    <header className="relative sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-aqua-100/40 bg-white/90 px-2 py-3 backdrop-blur-sm sm:gap-3 sm:px-3 sm:py-4">
+    <header className="chat-header relative sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-aqua-100/40 bg-white/90 px-2 py-3 backdrop-blur-sm sm:gap-3 sm:px-3 sm:py-4">
       <button type="button" onClick={onBack} aria-label="Back to chats" className="rounded-2xl p-2.5 text-cyan-700 transition duration-200 hover:bg-aqua-100/60 lg:hidden">
         <ArrowLeft size={22} />
       </button>

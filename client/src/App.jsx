@@ -2089,11 +2089,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           Offline mode. Cached chats stay available.
         </div>
       )}
-      <div className="mx-auto grid h-full max-w-7xl overflow-hidden border-0 sm:border border-white/60 bg-white/80 shadow-soft-xl backdrop-blur-sm sm:rounded-[2rem] lg:rounded-[2.5rem] lg:grid-cols-[minmax(280px,360px)_1fr]">
+      <div className="chat-shell-frame mx-auto grid h-full max-w-7xl overflow-hidden border-0 sm:border border-white/60 bg-white/80 shadow-soft-xl backdrop-blur-sm sm:rounded-[2rem] lg:rounded-[2.5rem] lg:grid-cols-[minmax(280px,360px)_1fr]">
         {/* Sidebar */}
-        <aside className={`${selectedChat && isMobile ? 'hidden' : 'flex'} min-h-0 w-full flex-col border-r border-aqua-100/60 bg-gradient-to-b from-white/95 to-aqua-25/50 lg:flex`}>
+        <aside className={`chat-sidebar ${selectedChat && isMobile ? 'hidden' : 'flex'} min-h-0 w-full flex-col border-r border-aqua-100/60 bg-gradient-to-b from-white/95 to-aqua-25/50 lg:flex`}>
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-aqua-100/40 px-4 py-4">
+          <div className="chat-sidebar-header flex items-center justify-between border-b border-aqua-100/40 px-4 py-4">
             <div className="flex items-center gap-3">
               <button onClick={() => setSettingsOpen(true)} className="rounded-2xl ring-1 ring-aqua-100/50 transition hover:ring-aqua-200" title="Profile settings">
                 <Avatar user={profile} online size="md" />
@@ -2142,8 +2142,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           </div>
 
           {/* Search Bar */}
-          <div className="border-b border-aqua-100/40 px-3 py-3">
-            <div className="flex items-center gap-2.5 rounded-2xl bg-gradient-to-r from-aqua-50/60 to-aqua-100/40 border border-aqua-100/50 px-3.5 py-2.5 transition focus-within:bg-aqua-50/80 focus-within:border-aqua-200/60 focus-within:shadow-inner-soft">
+          <div className="chat-sidebar-search-wrap border-b border-aqua-100/40 px-3 py-3">
+            <div className="chat-sidebar-search flex items-center gap-2.5 rounded-2xl bg-gradient-to-r from-aqua-50/60 to-aqua-100/40 border border-aqua-100/50 px-3.5 py-2.5 transition focus-within:bg-aqua-50/80 focus-within:border-aqua-200/60 focus-within:shadow-inner-soft">
               <Search size={17} className="text-cyan-600/70 flex-shrink-0" />
               <input value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value.trim()) setPanel('people'); }} placeholder="Search username, email, phone" className="min-w-0 flex-1 bg-transparent text-sm placeholder-slate-400 outline-none" />
             </div>
@@ -2155,11 +2155,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           </Suspense>
 
           {/* Tab Buttons */}
-          <div className="hidden gap-2 border-b border-aqua-100/40 px-3 py-3 sm:flex">
-            <button onClick={() => setPanel('chats')} className={`flex-1 rounded-2xl py-2.5 text-xs font-bold transition duration-200 ${panel === 'chats' ? 'bg-gradient-to-r from-cyan-500 to-aqua-400 text-white shadow-lg shadow-cyan-200/50' : 'bg-aqua-50/60 text-cyan-700 hover:bg-aqua-100/60'}`}>
+          <div className="chat-tabs hidden gap-2 border-b border-aqua-100/40 px-3 py-3 sm:flex">
+            <button onClick={() => setPanel('chats')} className={`chat-tab flex-1 rounded-2xl py-2.5 text-xs font-bold transition duration-200 ${panel === 'chats' ? 'chat-tab-active bg-gradient-to-r from-cyan-500 to-aqua-400 text-white shadow-lg shadow-cyan-200/50' : 'bg-aqua-50/60 text-cyan-700 hover:bg-aqua-100/60'}`}>
               Chats
             </button>
-            <button onClick={() => setPanel('people')} className={`flex-1 rounded-2xl py-2.5 text-xs font-bold transition duration-200 ${panel === 'people' ? 'bg-gradient-to-r from-cyan-500 to-aqua-400 text-white shadow-lg shadow-cyan-200/50' : 'bg-aqua-50/60 text-cyan-700 hover:bg-aqua-100/60'}`}>
+            <button onClick={() => setPanel('people')} className={`chat-tab flex-1 rounded-2xl py-2.5 text-xs font-bold transition duration-200 ${panel === 'people' ? 'chat-tab-active bg-gradient-to-r from-cyan-500 to-aqua-400 text-white shadow-lg shadow-cyan-200/50' : 'bg-aqua-50/60 text-cyan-700 hover:bg-aqua-100/60'}`}>
               People
             </button>
           </div>
@@ -2184,7 +2184,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                       e.preventDefault();
                       setActiveMenuChat(chat);
                     }}
-                    className={`w-full flex items-center gap-3 rounded-2xl p-3 text-left transition duration-200 group ${activeChat?._id === chat._id ? 'bg-gradient-to-r from-cyan-500/20 to-aqua-300/20 border border-cyan-200/50' : 'hover:bg-aqua-50/60 border border-transparent'}`}
+                    className={`chat-list-item w-full flex items-center gap-3 rounded-2xl p-3 text-left transition duration-200 group ${activeChat?._id === chat._id ? 'chat-list-item-active bg-gradient-to-r from-cyan-500/20 to-aqua-300/20 border border-cyan-200/50' : 'hover:bg-aqua-50/60 border border-transparent'}`}
                   >
                     <Avatar
                       name={chatTitle(chat, profile)}
@@ -2255,10 +2255,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </aside>
 
         {/* Chat Area */}
-        <section className={`${activeChat || !isMobile ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}>
+        <section className={`chat-main ${activeChat || !isMobile ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}>
           {activeChat ? (
             <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden relative">
-              <div className="flex flex-1 flex-col min-h-0 min-w-0">
+              <div className="chat-panel-shell flex flex-1 flex-col min-h-0 min-w-0">
                 <Suspense fallback={<div className="min-h-0 flex-1 animate-pulse bg-aqua-50/30" />}>
                   <ChatPanel
                     chat={activeChat}
@@ -2352,7 +2352,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         </section>
       </div>
 
-      <nav className={`${activeChat && isMobile ? 'hidden' : 'grid'} fixed bottom-0 left-0 right-0 z-30 grid-cols-3 border-t border-aqua-100 bg-white/95 px-2 sm:px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-soft backdrop-blur lg:hidden`}>
+      <nav className={`mobile-nav ${activeChat && isMobile ? 'hidden' : 'grid'} fixed bottom-0 left-0 right-0 z-30 grid-cols-3 border-t border-aqua-100 bg-white/95 px-2 sm:px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-soft backdrop-blur lg:hidden`}>
         <button onClick={() => setPanel('chats')} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-black ${panel === 'chats' ? 'bg-cyan-500 text-white' : 'text-cyan-800'}`}>
           <Home size={19} />
           Chats

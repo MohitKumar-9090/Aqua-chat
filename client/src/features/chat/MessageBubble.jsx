@@ -113,7 +113,7 @@ function MessageBubble({
         </div>
       )}
       <div
-        className={`max-w-[88%] sm:max-w-[85%] rounded-2xl px-4 py-2.5 shadow-soft sm:px-5 sm:py-3 ${
+        className={`message-bubble ${mine ? 'message-bubble-outgoing' : 'message-bubble-incoming'} max-w-[88%] sm:max-w-[85%] rounded-2xl px-4 py-2.5 shadow-soft sm:px-5 sm:py-3 ${
           mine
             ? `rounded-br-md bg-gradient-to-br from-cyan-500 to-aqua-400 text-white ${selected ? 'ring-2 ring-cyan-200' : ''}`
             : `rounded-bl-md border border-aqua-100/60 bg-white text-slate-800 ${selected ? 'ring-2 ring-cyan-300' : ''}`
@@ -122,7 +122,7 @@ function MessageBubble({
         {showSender && !mine && <p className="mb-1.5 text-xs font-black text-cyan-600">{message.sender?.displayName}</p>}
 
         {message.replyTo && !deleted && (
-          <div className={`mb-2 rounded-xl border-l-4 px-2.5 py-1.5 text-xs ${mine ? 'border-cyan-100/80 bg-white/15' : 'border-cyan-400 bg-aqua-50/80'}`}>
+          <div className={`message-reply-preview mb-2 rounded-xl border-l-4 px-2.5 py-1.5 text-xs ${mine ? 'border-cyan-100/80 bg-white/15' : 'border-cyan-400 bg-aqua-50/80'}`}>
             <p className="font-bold opacity-90">Reply</p>
             <p className="truncate opacity-80">{message.replyTo.body || message.replyTo.type}</p>
           </div>
@@ -131,7 +131,7 @@ function MessageBubble({
         {deleted ? (
           <p className={`text-sm italic ${mine ? 'text-cyan-50/90' : 'text-slate-500'}`}>This message was deleted</p>
         ) : message.type === 'call' ? (
-          <div className="mb-2 rounded-2xl border border-cyan-100/80 bg-aqua-50/90 px-4 py-3 text-sm font-semibold text-slate-700">
+          <div className="call-message-card mb-2 rounded-2xl border border-cyan-100/80 bg-aqua-50/90 px-4 py-3 text-sm font-semibold text-slate-700">
             <p>{message.body || `${message.callType === 'video' ? 'Video call' : 'Voice call'} ${message.callStatus || (message.duration ? 'Completed' : 'Missed')}`}</p>
             {message.duration ? <p className="mt-1 text-xs text-slate-500">Duration: {formatCallDuration(message.duration)}</p> : null}
           </div>
@@ -144,7 +144,7 @@ function MessageBubble({
           </>
         )}
 
-        <div className={`mt-2 flex items-center justify-end gap-1.5 text-xs ${mine ? 'text-cyan-50' : 'text-slate-400'}`}>
+        <div className={`message-meta mt-2 flex items-center justify-end gap-1.5 text-xs ${mine ? 'text-cyan-50' : 'text-slate-400'}`}>
           {message.pending && <Loader2 size={12} className="animate-spin" />}
           {message.status === 'failed' && <span className="font-semibold text-rose-300">Failed</span>}
           {formatTime(message.createdAt)}

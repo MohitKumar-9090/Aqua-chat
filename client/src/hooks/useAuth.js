@@ -191,7 +191,7 @@ export const useAuth = () => {
           }
 
           const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
-          const { user: synced } = await api.sync({
+          const { user: synced } = await api.sync(user, {
             name: pendingSignup?.name || user.displayName,
             displayName: pendingSignup?.name || user.displayName,
             username: pendingSignup?.username,

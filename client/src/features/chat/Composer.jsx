@@ -99,7 +99,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
   return (
     <form
       onSubmit={submit}
-      className={`composer-keyboard-safe sticky bottom-0 z-20 shrink-0 border-t border-aqua-100/40 bg-white/95 backdrop-blur-sm ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+0.25rem)]' : ''}`}
+      className={`chat-composer composer-keyboard-safe sticky bottom-0 z-20 shrink-0 border-t border-aqua-100/40 bg-white/95 backdrop-blur-sm ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+0.25rem)]' : ''}`}
     >
       {replyTo && (
         <div className="mx-auto flex max-w-3xl items-center gap-2 border-b border-aqua-100/60 px-3 py-2 sm:px-4">

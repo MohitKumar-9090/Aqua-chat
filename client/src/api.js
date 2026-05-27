@@ -82,8 +82,35 @@ const safeIsoString = (val) => {
   return null;
 };
 
+
 const currentUid = () => {
-  const uid = auth.currentUser?.uid;
+  let uid = auth.currentUser?.uid;
+  if (!uid) {
+    try {
+      const cached = localStorage.getItem('aquachat_session');
+      if (cached) {
+        const session = JSON.parse(cached);
+        if (session && session.uid && (Date.now() - (session.timestamp || 0) < 24 * 60 * 60 * 1000)) {
+          uid = session.uid;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+  if (!uid) {
+    try {
+      const cachedProfile = localStorage.getItem('aquachat_profile');
+      if (cachedProfile) {
+        const profile = JSON.parse(cachedProfile);
+        if (profile && (profile._id || profile.uid)) {
+          uid = profile._id || profile.uid;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
   if (!uid) throw new Error('You must be logged in.');
   return String(uid).trim();
 };
@@ -865,8 +892,11 @@ const ensureContactAllowed = async (uidInput, otherUidInput) => {
 };
 
 export const api = {
-  sync: async (body = {}) => {
-    const user = auth.currentUser;
+  sync: async (userOrBody = {}, bodyInput) => {
+    const passedUser = (userOrBody && typeof userOrBody === 'object' && 'uid' in userOrBody) ? userOrBody : null;
+    const user = passedUser || auth.currentUser;
+    const body = passedUser ? (bodyInput || {}) : userOrBody;
+
     if (!user) throw new Error('You must be logged in.');
     const userRef = doc(firestore, 'users', user.uid);
     const existing = await getDoc(userRef);
