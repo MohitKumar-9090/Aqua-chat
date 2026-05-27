@@ -3,12 +3,12 @@ import { ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import { api } from '../../api.js';
 import { markStatusViewedLocal } from '../../utils/statusViewed.js';
+import { auth } from '../../firebase.js';
 
 export default function StatusViewer({ bundle, meId, onClose, onDeleteStatus }) {
   const [index, setIndex] = useState(0);
   const [deletedIds, setDeletedIds] = useState(() => new Set());
   const items = (bundle?.items || []).filter((item) => !deletedIds.has(item._id));
-  const current = items[index];
 
   useEffect(() => {
     setIndex(0);
@@ -41,7 +41,15 @@ export default function StatusViewer({ bundle, meId, onClose, onDeleteStatus }) 
     if (index < items.length - 1) setIndex((i) => i + 1);
     else onClose();
   };
-  const mine = String(bundle.userId || '').trim() === String(meId || '').trim();
+  const currentUid = String(auth.currentUser?.uid || meId || '').trim();
+  const ownerUid = String(
+    current?.userId ||
+    current?.ownerId ||
+    current?.uid ||
+    bundle?.userId ||
+    ''
+  ).trim();
+  const mine = currentUid === ownerUid;
   const deleteCurrent = async () => {
     if (!current?._id || !mine) return;
     await onDeleteStatus?.(current._id);

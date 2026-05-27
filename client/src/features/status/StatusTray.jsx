@@ -4,6 +4,7 @@ import Avatar from '../../components/Avatar.jsx';
 import { groupStatusesByUser, userHasActiveStatus, userHasUnviewedStatus } from '../../utils/statusHelpers.js';
 import StatusCreateModal from './StatusCreateModal.jsx';
 import StatusViewer from './StatusViewer.jsx';
+import { auth } from '../../firebase.js';
 
 export default function StatusTray({ statuses, me, onCreateStatus, onDeleteStatus }) {
   const [viewerBundle, setViewerBundle] = useState(null);
@@ -13,17 +14,23 @@ export default function StatusTray({ statuses, me, onCreateStatus, onDeleteStatu
   const bundles = useMemo(() => {
     const grouped = groupStatusesByUser(statuses);
     const list = [];
-    if (grouped.has(meId)) {
-      list.push({ userId: meId, user: me, items: grouped.get(meId) });
+    const currentUid = String(auth.currentUser?.uid || meId || '').trim();
+    if (grouped.has(currentUid)) {
+      list.push({ userId: currentUid, user: me, items: grouped.get(currentUid) });
     }
     grouped.forEach((items, userId) => {
-      if (userId === meId) return;
-      list.push({ userId, user: items[0]?.user, items });
+      const cleanUserId = String(userId || '').trim();
+      if (cleanUserId === currentUid) return;
+      list.push({ userId: cleanUserId, user: items[0]?.user, items });
     });
     return list.slice(0, 14);
   }, [statuses, me, meId]);
 
-  const myBundle = bundles.find((b) => b.userId === meId);
+  const myBundle = bundles.find((b) => {
+    const currentUid = String(auth.currentUser?.uid || meId || '').trim();
+    const ownerUid = String(b.userId || '').trim();
+    return currentUid === ownerUid;
+  });
 
   return (
     <>
@@ -54,7 +61,11 @@ export default function StatusTray({ statuses, me, onCreateStatus, onDeleteStatu
         )}
 
         {bundles
-          .filter((bundle) => bundle.userId !== meId)
+          .filter((bundle) => {
+            const currentUid = String(auth.currentUser?.uid || meId || '').trim();
+            const ownerUid = String(bundle.userId || '').trim();
+            return currentUid !== ownerUid;
+          })
           .map((bundle) => (
             <button
               key={bundle.userId}

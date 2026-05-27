@@ -625,14 +625,17 @@ const mapStatusDoc = async (statusSnap) => {
   const data = statusSnap.data();
   const createdAt = safeIsoString(data.createdAt) || '';
   const expiresAt = safeIsoString(data.expiresAt) || '';
+  const text = data.text || data.statusText || data.caption || '';
+  const mediaUrl = data.mediaUrl || data.statusMedia || '';
   return {
     _id: statusSnap.id,
     ...data,
-    statusText: data.statusText || data.caption || '',
-    statusMedia: data.statusMedia || data.mediaUrl || '',
-    mediaUrl: data.statusMedia || data.mediaUrl || '',
-    caption: data.statusText || data.caption || '',
-    user: await readUser(data.userId),
+    text,
+    statusText: text,
+    caption: text,
+    mediaUrl,
+    statusMedia: mediaUrl,
+    user: await readUser(data.userId || data.ownerId || data.uid),
     createdAt,
     expiresAt
   };
@@ -1594,12 +1597,15 @@ export const api = {
     const statusPrivacy = user?.settings?.statusPrivacy || { mode: 'everyone', selectedIds: [] };
     const expiresAtDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const expiresAt = Timestamp.fromDate(expiresAtDate);
+    const text = body.text || body.statusText || body.caption || '';
+    const mediaUrl = body.mediaUrl || body.statusMedia || '';
     const payload = {
       type: body.type || 'text',
-      statusText: body.statusText || body.caption || '',
-      statusMedia: body.statusMedia || body.mediaUrl || '',
-      caption: body.statusText || body.caption || '',
-      mediaUrl: body.statusMedia || body.mediaUrl || '',
+      text,
+      statusText: text,
+      caption: text,
+      mediaUrl,
+      statusMedia: mediaUrl,
       userId: uid,
       ownerId: uid,
       visibility: statusPrivacy.mode || 'everyone',
@@ -1626,15 +1632,20 @@ export const api = {
   },
 
   deleteStatus: async (statusIdInput) => {
-    const uid = currentUid();
+    const currentUid = String(auth.currentUser?.uid || '').trim();
     const statusId = String(statusIdInput || '').trim();
     if (!statusId) throw new Error('Missing status id.');
     const statusRef = doc(firestore, 'statuses', statusId);
     const snap = await getDoc(statusRef);
     if (!snap.exists()) return { ok: true };
-    const data = snap.data();
-    const owner = normalizeUid(data.ownerId || data.userId || data.user?.uid || data.user?._id);
-    if (owner !== uid) throw new Error('You can delete only your own status.');
+    const status = snap.data();
+    const ownerUid = String(
+      status.userId ||
+      status.ownerId ||
+      status.uid ||
+      ''
+    ).trim();
+    if (currentUid !== ownerUid) throw new Error('You can delete only your own status.');
     await deleteDoc(statusRef);
     return { ok: true };
   },

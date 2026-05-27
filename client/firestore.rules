@@ -110,8 +110,8 @@ service cloud.firestore {
     match /statuses/{statusId} {
       allow read: if signedIn();
       allow create: if signedIn() &&
-        request.resource.data.userId == request.auth.uid &&
-        (!('ownerId' in request.resource.data) || request.resource.data.ownerId == request.auth.uid) &&
+        (request.resource.data.userId == request.auth.uid || request.resource.data.userId.trim() == request.auth.uid.trim()) &&
+        (!('ownerId' in request.resource.data) || request.resource.data.ownerId == request.auth.uid || request.resource.data.ownerId.trim() == request.auth.uid.trim()) &&
         request.resource.data.expiresAt is timestamp;
       allow update: if signedIn() &&
         (
@@ -120,13 +120,21 @@ service cloud.firestore {
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['visibility', 'selectedViewerIds']) &&
             (
               resource.data.userId == request.auth.uid ||
-              ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
+              (resource.data.userId is string && resource.data.userId.trim() == request.auth.uid.trim()) ||
+              ('ownerId' in resource.data && (
+                resource.data.ownerId == request.auth.uid ||
+                (resource.data.ownerId is string && resource.data.ownerId.trim() == request.auth.uid.trim())
+              ))
             )
           )
         );
       allow delete: if signedIn() && (
         resource.data.userId == request.auth.uid ||
-        ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
+        (resource.data.userId is string && resource.data.userId.trim() == request.auth.uid.trim()) ||
+        ('ownerId' in resource.data && (
+          resource.data.ownerId == request.auth.uid ||
+          (resource.data.ownerId is string && resource.data.ownerId.trim() == request.auth.uid.trim())
+        ))
       );
     }
   }
