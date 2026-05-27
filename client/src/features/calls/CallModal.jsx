@@ -566,9 +566,9 @@ function CallModal({
         )}
 
         {!minimized && (
-          <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-10 sm:pb-8 flex flex-col items-center">
+          <div className="pointer-events-none absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-10 sm:pb-8 flex flex-col items-center">
             {state.incoming && !state.preparing && (
-              <div className="mb-4 flex justify-center gap-4">
+              <div className="pointer-events-auto mb-4 flex justify-center gap-4">
                 <button
                   type="button"
                   onClick={onEnd}
@@ -588,7 +588,7 @@ function CallModal({
             )}
 
             {showControls && (
-              <div className="mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full bg-black/40 px-3 py-3 min-[375px]:gap-3 min-[375px]:px-4 min-[410px]:gap-4 min-[410px]:px-5 min-[410px]:py-4 sm:gap-6 sm:px-8">
+              <div className="pointer-events-auto mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full bg-black/40 px-3 py-3 min-[375px]:gap-3 min-[375px]:px-4 min-[410px]:gap-4 min-[410px]:px-5 min-[410px]:py-4 sm:gap-6 sm:px-8">
                 {controlBtn(
                   muted,
                   onToggleMute,
@@ -750,10 +750,13 @@ function CallModal({
               <p className="text-center text-xs text-cyan-200">Call duration</p>
             )}
           </div>
-          {!minimized && (
-        <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-10 sm:pb-8 flex flex-col items-center">
+        </div>
+      )}
+
+      {!minimized && (
+        <div className="pointer-events-none absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/60 via-black/35 to-transparent px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-10 sm:pb-8 flex flex-col items-center">
           {state.incoming && !state.preparing && (
-            <div className="mb-4 flex justify-center gap-4">
+            <div className="pointer-events-auto mb-4 flex justify-center gap-4">
               <button
                 type="button"
                 onClick={onEnd}
@@ -773,7 +776,7 @@ function CallModal({
           )}
 
           {showControls && (
-            <div className="mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full bg-black/35 px-3 py-3 min-[375px]:gap-3 min-[375px]:px-4 min-[410px]:gap-4 min-[410px]:px-5 min-[410px]:py-4 sm:gap-6 sm:px-8">
+            <div className="pointer-events-auto mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full bg-black/35 px-3 py-3 min-[375px]:gap-3 min-[375px]:px-4 min-[410px]:gap-4 min-[410px]:px-5 min-[410px]:py-4 sm:gap-6 sm:px-8">
               {controlBtn(
                 muted,
                 onToggleMute,
@@ -822,8 +825,6 @@ function CallModal({
               </button>
             </div>
           )}
-        </div>
-      )}
         </div>
       )}
 
