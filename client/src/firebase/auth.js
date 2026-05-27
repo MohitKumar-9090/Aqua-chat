@@ -10,7 +10,7 @@ import {
   updatePassword,
   updateProfile,
   setPersistence,
-  browserLocalPersistence
+  indexedDBLocalPersistence
 } from 'firebase/auth';
 import { auth } from './app.js';
 
@@ -25,9 +25,12 @@ if (auth) {
     access_type: 'offline'
   });
 
-  setPersistence(auth, browserLocalPersistence).catch((err) => {
-    console.warn('Could not set persistence:', err.message);
-  });
+  if (typeof window !== 'undefined' && !window.__firebaseAuthPersistenceSet) {
+    window.__firebaseAuthPersistenceSet = true;
+    setPersistence(auth, indexedDBLocalPersistence).catch((err) => {
+      console.warn('Could not set persistence:', err.message);
+    });
+  }
 
   getRedirectResult(auth).catch((err) => {
     console.error('Redirect result error:', err.message);

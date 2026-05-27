@@ -10,31 +10,115 @@ const PROFILE_STORAGE_KEY = 'aquachat_profile';
 const PENDING_SIGNUP_KEY = 'pendingSignupProfile';
 const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
+const pruneProfileForStorage = (profile) => {
+  if (!profile) return null;
+  return {
+    _id: profile._id,
+    uid: profile.uid,
+    firebaseUid: profile.firebaseUid,
+    displayName: profile.displayName,
+    name: profile.name,
+    username: profile.username,
+    email: profile.email,
+    phoneNumber: profile.phoneNumber,
+    phone: profile.phone,
+    photoURL: profile.photoURL,
+    profilePic: profile.profilePic,
+    profilePicture: profile.profilePicture,
+    bio: profile.bio,
+    isOnline: profile.isOnline,
+    lastSeen: profile.lastSeen
+  };
+};
+
+const cleanOldCacheKeys = () => {
+  try {
+    const allowedKeys = [
+      SESSION_STORAGE_KEY,
+      PROFILE_STORAGE_KEY,
+      PENDING_SIGNUP_KEY,
+      'aquachat_status_viewed',
+      'aquachat_install_dismissed'
+    ];
+
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+
+      const isAppKey = allowedKeys.includes(key);
+      const isFirebaseKey = key.startsWith('firebase:');
+
+      if (!isAppKey && !isFirebaseKey) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch (err) {
+    console.warn('Cache cleanup failed:', err.message);
+  }
+};
+
 export const useAuth = () => {
-  const [firebaseUser, setFirebaseUser] = useState(null);
-  const [profile, setProfile] = useState(null);
   const lastUidRef = useRef(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
 
-  const presenceUid =
-    firebaseUser?.uid && !needsEmailVerification ? firebaseUser.uid : null;
-  usePresenceSession(presenceUid);
-
-  // Try to restore from localStorage on mount
-  useEffect(() => {
+  // Synchronous recovery from localStorage for instant boot
+  const getInitialSession = () => {
     try {
       const cached = localStorage.getItem(SESSION_STORAGE_KEY);
       if (cached) {
         const session = JSON.parse(cached);
         if (Date.now() - session.timestamp < CACHE_DURATION) {
-          // Restore from cache if still valid
-          console.log('Restoring session from cache');
+          return session;
         }
       }
     } catch (err) {
-      console.warn('Could not restore session:', err.message);
+      console.warn('Could not read session cache:', err.message);
+    }
+    return null;
+  };
+
+  const getInitialProfile = () => {
+    try {
+      const cached = localStorage.getItem(PROFILE_STORAGE_KEY);
+      if (cached) {
+        const profile = JSON.parse(cached);
+        const session = getInitialSession();
+        if (session && profile._id === session.uid) {
+          return profile;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not read profile cache:', err.message);
+    }
+    return null;
+  };
+
+  const initialSession = getInitialSession();
+  const initialProfile = getInitialProfile();
+
+  const [firebaseUser, setFirebaseUser] = useState(() => initialSession ? {
+    uid: initialSession.uid,
+    email: initialSession.email,
+    displayName: initialSession.displayName,
+    emailVerified: true
+  } : null);
+
+  const [profile, setProfile] = useState(() => initialProfile);
+  const [loading, setLoading] = useState(() => !initialSession);
+
+  const profileRef = useRef(initialProfile);
+  profileRef.current = profile;
+
+  const presenceUid =
+    firebaseUser?.uid && !needsEmailVerification ? firebaseUser.uid : null;
+  usePresenceSession(presenceUid);
+
+  // Clean stale keys and set initial refs
+  useEffect(() => {
+    cleanOldCacheKeys();
+    if (initialSession?.uid) {
+      lastUidRef.current = initialSession.uid;
     }
   }, []);
 
@@ -51,8 +135,6 @@ export const useAuth = () => {
     });
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setLoading(true);
-      setFirebaseUser(user);
       setError('');
 
       if (!user) {
@@ -60,6 +142,7 @@ export const useAuth = () => {
           stopPresenceSession(lastUidRef.current).catch(console.error);
           lastUidRef.current = null;
         }
+        setFirebaseUser(null);
         setProfile(null);
         setNeedsEmailVerification(false);
         localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -68,17 +151,27 @@ export const useAuth = () => {
         return;
       }
 
+      // Prevent repeated rehydration if user is already hydrated and active
+      if (user.uid === lastUidRef.current && profileRef.current) {
+        setFirebaseUser(user);
+        setLoading(false);
+        return;
+      }
+
+      setFirebaseUser(user);
+      setLoading(true);
+      setNeedsEmailVerification(isPasswordProvider(user) && !user.emailVerified);
+
       if (isPasswordProvider(user) && !user.emailVerified) {
-        setNeedsEmailVerification(true);
         setProfile(null);
         setLoading(false);
         return;
       }
 
-      setNeedsEmailVerification(false);
       lastUidRef.current = user.uid;
 
       try {
+        // Hydrate from localStorage first to avoid flashes
         const cachedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
         if (cachedProfileRaw) {
           const cachedProfile = JSON.parse(cachedProfileRaw);
@@ -98,40 +191,38 @@ export const useAuth = () => {
           photoURL: user.photoURL
         });
         localStorage.removeItem(PENDING_SIGNUP_KEY);
-        
-        // Store session info
+
+        const pruned = pruneProfileForStorage(synced);
+
         localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
           uid: user.uid,
           timestamp: Date.now(),
           email: user.email,
           displayName: user.displayName
         }));
-        
-        // Store profile info for quick recovery
-        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
-        
+
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(pruned));
+
         setProfile(synced);
         primeUserCache(synced);
-        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(synced));
       } catch (err) {
         const message = err.message || 'Could not load your profile.';
         setError(message);
-        
-        // Provide a fallback profile from cache if available
+
+        // Fallback to cache
         try {
           const cachedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
           if (cachedProfile) {
-            const profile = JSON.parse(cachedProfile);
-            if (profile._id === user.uid) {
-              setProfile(profile);
+            const fallbackProfile = JSON.parse(cachedProfile);
+            if (fallbackProfile._id === user.uid) {
+              setProfile(fallbackProfile);
               return;
             }
-            localStorage.removeItem(PROFILE_STORAGE_KEY);
           }
         } catch (cacheErr) {
-          // Cache read failed, continue with error
+          // ignore
         }
-        
+
         setProfile({
           _id: user.uid,
           firebaseUid: user.uid,
@@ -159,7 +250,8 @@ export const useAuth = () => {
       if (!user) return;
       primeUserCache(user);
       setProfile((current) => ({ ...current, ...user }));
-      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(user));
+      const pruned = pruneProfileForStorage(user);
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(pruned));
     });
   }, [firebaseUser?.uid, needsEmailVerification]);
 

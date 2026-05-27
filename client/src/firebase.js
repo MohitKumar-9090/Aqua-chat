@@ -17,7 +17,7 @@ import {
   updatePassword,
   updateProfile,
   setPersistence,
-  browserLocalPersistence,
+  indexedDBLocalPersistence,
   EmailAuthProvider,
   reauthenticateWithCredential
 } from 'firebase/auth';
@@ -49,10 +49,13 @@ try {
     access_type: 'offline'
   });
   
-  // Enable persistent login sessions
-  setPersistence(auth, browserLocalPersistence).catch(err => {
-    console.warn('Could not set persistence:', err.message);
-  });
+  // Enable persistent login sessions with a guard to ensure initialized only once
+  if (typeof window !== 'undefined' && !window.__firebaseAuthPersistenceSet) {
+    window.__firebaseAuthPersistenceSet = true;
+    setPersistence(auth, indexedDBLocalPersistence).catch(err => {
+      console.warn('Could not set persistence:', err.message);
+    });
+  }
 
 } catch (error) {
   console.error('Firebase initialization failed:', error.message);
