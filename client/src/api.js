@@ -691,9 +691,16 @@ export const subscribeMessages = (chatId, handler) => {
   };
 
   const attach = (q) => {
+    console.log('[TEMP DIAGNOSTIC] subscribeMessages listener ATTACHED for chatId:', chatId);
     unsubscribe = onSnapshot(
       q,
       (snap) => {
+        console.log('[TEMP DIAGNOSTIC] subscribeMessages snapshot received for chatId:', chatId, {
+          docChangesCount: snap.docChanges().length,
+          docsCount: snap.docs.length,
+          hasPendingWrites: snap.metadata.hasPendingWrites,
+          fromCache: snap.metadata.fromCache
+        });
         if (activeChatId !== chatId) return;
         let hasChanges = false;
         if (!snap.docChanges().length) {
@@ -729,6 +736,7 @@ export const subscribeMessages = (chatId, handler) => {
 
   attach(primaryQuery);
   return () => {
+    console.log('[TEMP DIAGNOSTIC] subscribeMessages listener DETACHED for chatId:', chatId);
     activeChatId = null;
     messageMap.clear();
     lastEmitted = null;
@@ -1534,7 +1542,16 @@ export const api = {
         count += 1;
       }
     });
-    if (count > 0) await batch.commit();
+    if (count > 0) {
+      console.log('[TEMP DIAGNOSTIC] api.seen batch commit initiating, count:', count);
+      try {
+        await batch.commit();
+        console.log('[TEMP DIAGNOSTIC] api.seen batch commit SUCCESS');
+      } catch (err) {
+        console.error('[TEMP DIAGNOSTIC] api.seen batch commit FAILURE:', err.message || err);
+        throw err;
+      }
+    }
     return { ok: true };
   },
 
@@ -1555,14 +1572,35 @@ export const api = {
         count += 1;
       }
     });
-    if (count > 0) await batch.commit();
+    if (count > 0) {
+      console.log('[TEMP DIAGNOSTIC] api.deliver batch commit initiating, count:', count);
+      try {
+        await batch.commit();
+        console.log('[TEMP DIAGNOSTIC] api.deliver batch commit SUCCESS');
+      } catch (err) {
+        console.error('[TEMP DIAGNOSTIC] api.deliver batch commit FAILURE:', err.message || err);
+        throw err;
+      }
+    }
     return { ok: true };
   },
 
   markMessageDelivered: async (chatId, messageId) => {
     const uid = currentUid();
     const ref = doc(firestore, 'chats', chatId, 'messages', messageId);
-    await updateDoc(ref, { deliveredTo: arrayUnion(uid) });
+    console.log('[TEMP DIAGNOSTIC] markMessageDelivered initiating:', { chatId, messageId, uid });
+    try {
+      await updateDoc(ref, { deliveredTo: arrayUnion(uid) });
+      console.log('[TEMP DIAGNOSTIC] markMessageDelivered SUCCESS:', { chatId, messageId, uid });
+    } catch (err) {
+      console.error('[TEMP DIAGNOSTIC] markMessageDelivered FAILURE:', {
+        chatId,
+        messageId,
+        uid,
+        error: err.message || err
+      });
+      throw err;
+    }
     return { ok: true };
   },
 
