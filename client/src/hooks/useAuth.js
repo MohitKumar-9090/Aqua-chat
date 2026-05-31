@@ -132,7 +132,12 @@ export const useAuth = () => {
     setLoading(true);
 
     const attachAuthObserver = async () => {
-      await authPersistenceReady;
+      console.log('[PWA Startup Debug] attachAuthObserver called. Triggering auth observer registration instantly.');
+      if (authPersistenceReady) {
+        authPersistenceReady.catch((err) => {
+          console.warn('[PWA Startup Debug] authPersistenceReady error:', err.message);
+        });
+      }
       if (cancelled) return;
 
       getRedirectResult(auth).catch((err) => {
@@ -186,8 +191,12 @@ export const useAuth = () => {
           if (cachedProfileRaw) {
             const cachedProfile = JSON.parse(cachedProfileRaw);
             if (cachedProfile._id === user.uid) {
+              console.log('[PWA Startup Debug] Found cached profile in localStorage. Rendering UI instantly.');
               setProfile(cachedProfile);
+              setLoading(false); // Unblock rendering instantly
             }
+          } else {
+            console.log('[PWA Startup Debug] No cached profile found. App will wait for api.sync.');
           }
 
           const pendingSignup = JSON.parse(localStorage.getItem(PENDING_SIGNUP_KEY) || 'null');
