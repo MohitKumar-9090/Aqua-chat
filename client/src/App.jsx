@@ -82,7 +82,6 @@ export default function App() {
       try {
         if (screen.orientation && typeof screen.orientation.lock === 'function') {
           await screen.orientation.lock('portrait');
-          console.log('[Screen Orientation] Locked to portrait at App root');
         }
       } catch (err) {
         console.warn('[Screen Orientation] Lock failed or not supported at App root:', err.message);
@@ -300,6 +299,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const blockStateRef = useRef(blockState);
   const prevChatsRef = useRef([]);
   const initialNotificationHandledRef = useRef(false);
+  const deliveredSetRef = useRef(new Set());
+  const lastSyncedProfileRef = useRef(null);
+  const answerCallRef = useRef();
+  const endCallRef = useRef();
   chatsRef.current = chats;
   selectedChatRef.current = activeChat;
   callStateRef.current = callState;
@@ -508,7 +511,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       if (document.pictureInPictureEnabled && video && video.readyState >= 1) {
         if (document.pictureInPictureElement !== video) {
           await video.requestPictureInPicture();
-          console.log('[PiP] Entered Picture-in-Picture');
         }
       }
     } catch (err) {
@@ -520,7 +522,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     try {
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
-        console.log('[PiP] Exited Picture-in-Picture');
       }
     } catch (err) {
       console.warn('[PiP] exitPictureInPicture failed:', err.message);
@@ -566,7 +567,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (!video) return undefined;
 
     const handleLeavePiP = () => {
-      console.log('[PiP] leavepictureinpicture event fired, restoring call screen');
       setCallMinimized(false);
     };
 
@@ -710,14 +710,22 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, []);
 
   const mergePresence = (user, presence) => {
+    if (!user) return user;
     if (isBlockedUser(user._id)) {
       return { ...user, isOnline: false, online: false, lastSeen: null };
     }
-    const live = presence[user._id];
+    const live = presence ? presence[user._id] : undefined;
     if (!live) {
       return { ...user, isOnline: false, online: false };
     }
     const isOnline = Boolean(live.isOnline ?? live.online);
+    if (
+      user.isOnline === isOnline &&
+      user.online === isOnline &&
+      user.lastSeen === (live.lastSeen || user.lastSeen)
+    ) {
+      return user;
+    }
     return {
       ...user,
       isOnline,
@@ -726,16 +734,38 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     };
   };
 
-  const applyPresenceToUsers = (items, presence) => items.map((user) => mergePresence(user, presence));
+  const applyPresenceToUsers = (items, presence) => {
+    let changed = false;
+    const next = items.map((user) => {
+      const merged = mergePresence(user, presence);
+      if (merged !== user) {
+        changed = true;
+      }
+      return merged;
+    });
+    return changed ? next : items;
+  };
 
-  const applyPresenceToChats = (items, presence) =>
-    items.map((chat) => ({
-      ...chat,
-      participants: chat.participants.map((participant) => ({
-        ...participant,
-        user: mergePresence(participant.user, presence)
-      }))
-    }));
+  const applyPresenceToChats = (items, presence) => {
+    let changed = false;
+    const next = items.map((chat) => {
+      let participantChanged = false;
+      const nextParticipants = chat.participants.map((participant) => {
+        const mergedUser = mergePresence(participant.user, presence);
+        if (mergedUser !== participant.user) {
+          participantChanged = true;
+          return { ...participant, user: mergedUser };
+        }
+        return participant;
+      });
+      if (participantChanged) {
+        changed = true;
+        return { ...chat, participants: nextParticipants };
+      }
+      return chat;
+    });
+    return changed ? next : items;
+  };
 
   useEffect(() => {
     const presence = presenceRef.current;
@@ -755,9 +785,38 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   useEffect(() => {
     if (!profile?._id) return undefined;
     let unsubscribePresence;
+    const prevPresenceRef = { current: {} };
     const timer = setTimeout(() => {
       unsubscribePresence = subscribePresence((presence) => {
-        presenceRef.current = presence;
+        const prev = prevPresenceRef.current;
+        const relevantUids = new Set();
+        if (chatsRef.current) {
+          chatsRef.current.forEach((c) => {
+            if (c.participantIds) {
+              c.participantIds.forEach((id) => relevantUids.add(id));
+            }
+          });
+        }
+        
+        let hasRelevantChange = false;
+        for (const uid of relevantUids) {
+          const p = presence ? presence[uid] : undefined;
+          const pp = prev ? prev[uid] : undefined;
+          const pOnline = p ? Boolean(p.isOnline ?? p.online) : false;
+          const ppOnline = pp ? Boolean(pp.isOnline ?? pp.online) : false;
+          const pLastSeen = p?.lastSeen;
+          const ppLastSeen = pp?.lastSeen;
+          if (pOnline !== ppOnline || pLastSeen !== ppLastSeen) {
+            hasRelevantChange = true;
+            break;
+          }
+        }
+        
+        prevPresenceRef.current = presence || {};
+        presenceRef.current = presence || {};
+        
+        if (!hasRelevantChange) return;
+        
         setUsers((current) => applyPresenceToUsers(current, presence));
         setChats((current) => applyPresenceToChats(current, presence));
       });
@@ -770,27 +829,49 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   useEffect(() => {
     if (!profile?._id || !chats || chats.length === 0) return;
-    const uid = profile._id;
-    chats.forEach((chat) => {
-      const lastMsg = chat.lastMessage;
-      if (
-        lastMsg &&
-        lastMsg.senderId !== uid &&
-        !lastMsg.deletedForEveryone &&
-        lastMsg.status !== 'failed'
-      ) {
-        const delivered = lastMsg.deliveredTo || [];
-        // Mark delivered independently of seenBy — delivery != seen
-        if (!delivered.includes(uid)) {
-          api.markMessageDelivered(chat._id, lastMsg._id).catch(console.error);
+    
+    // Debounce to prevent writing on every rapid chat/presence reference change
+    const timer = setTimeout(() => {
+      const uid = profile._id;
+      chats.forEach((chat) => {
+        const lastMsg = chat.lastMessage;
+        if (
+          lastMsg &&
+          lastMsg.senderId !== uid &&
+          !lastMsg.deletedForEveryone &&
+          lastMsg.status !== 'failed'
+        ) {
+          const delivered = lastMsg.deliveredTo || [];
+          const key = `${chat._id}:${lastMsg._id}`;
+          // Mark delivered independently of seenBy — delivery != seen
+          if (!delivered.includes(uid) && !deliveredSetRef.current.has(key)) {
+            deliveredSetRef.current.add(key);
+            api.markMessageDelivered(chat._id, lastMsg._id).catch((err) => {
+              console.error(err);
+              // Remove on failure to allow retry
+              deliveredSetRef.current.delete(key);
+            });
+          }
         }
+      });
+      
+      // Bound the ref set size to prevent memory leak
+      if (deliveredSetRef.current.size > 500) {
+        const arr = [...deliveredSetRef.current];
+        deliveredSetRef.current = new Set(arr.slice(-200));
       }
-    });
+    }, 1500);
+
+    return () => clearTimeout(timer);
   }, [chats, profile?._id]);
 
   // Sync current user's profile updates into all active chats in memory and selectedChat
   useEffect(() => {
     if (!profile?._id) return;
+    const key = `${profile.displayName}|${profile.photoURL}|${profile.username}|${profile.bio}`;
+    if (lastSyncedProfileRef.current === key) return;
+    lastSyncedProfileRef.current = key;
+
     setChats((currentChats) => {
       let changed = false;
       const nextChats = currentChats.map((chat) => {
@@ -856,11 +937,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   useEffect(() => {
     if (!selectedPeer?._id) return;
 
-    console.log('[Realtime Sync] Subscribing to selectedPeer:', selectedPeer._id);
     const unsubscribe = api.subscribeUser(selectedPeer._id, (updatedUser) => {
       if (!updatedUser) return;
 
-      console.log('[Realtime Sync] selectedPeer updated:', updatedUser._id, updatedUser.displayName);
+
 
       // Update the user cache instantly
       primeUserCache(updatedUser);
@@ -929,7 +1009,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     });
 
     return () => {
-      console.log('[Realtime Sync] Unsubscribing from selectedPeer:', selectedPeer._id);
       unsubscribe();
     };
   }, [selectedPeer?._id]);
@@ -946,7 +1025,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           audio.pause();
           audio.src = '';
           audio.srcObject = null;
-          console.log('[WebRTC] Remote audio element unlocked successfully');
+
         })
         .catch((err) => {
           console.warn('[WebRTC] Remote audio element unlock failed:', err.message);
@@ -1079,6 +1158,26 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setPanel('chats');
   };
 
+  const handleChatClick = useCallback((chat) => {
+    setSelectedChat(chat);
+    const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+    setChats((current) => {
+      let changed = false;
+      const next = current.map((item) => {
+        const itemOtherId = item.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+        const isMatch = item._id === chat._id || (chat.type === 'direct' && item.type === 'direct' && itemOtherId === otherId);
+        if (isMatch) {
+          if (item.unreadCount !== 0) {
+            changed = true;
+            return { ...item, unreadCount: 0 };
+          }
+        }
+        return item;
+      });
+      return changed ? next : current;
+    });
+  }, [profile?._id]);
+
   const connectWithUser = async (user) => {
     setConnectingUserId(user._id);
     try {
@@ -1120,7 +1219,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const handleDisconnect = async (userId) => {
     const currentUidStr = String(profile?._id || firebaseUser?.uid || '').trim();
     const targetPeerId = String(userId || '').trim();
-    console.log('[Disconnect Attempt] Target Peer ID:', targetPeerId, '| Current UID:', currentUidStr);
     try {
       await api.disconnectUser(targetPeerId);
       patchProfileConnections(targetPeerId, false);
@@ -2059,6 +2157,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     }
   };
 
+  answerCallRef.current = answerCall;
+  endCallRef.current = endCall;
+
   // Handle notification message clicks dynamically while keeping existing state/call alive
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return undefined;
@@ -2074,9 +2175,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           }
         }
         if (action === 'accept') {
-          answerCall();
+          answerCallRef.current?.();
         } else if (action === 'reject') {
-          endCall();
+          endCallRef.current?.();
         }
       }
     };
@@ -2085,24 +2186,24 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleSWMessage);
     };
-  }, [answerCall, endCall]);
+  }, []);
 
   // Handle incoming call action from URL query params when app is loaded fresh
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const action = params.get('action');
     if (action === 'accept' && callState?.incoming && callState?.active) {
-      answerCall();
+      answerCallRef.current?.();
       const url = new URL(window.location);
       url.searchParams.delete('action');
       window.history.replaceState({}, '', url);
     } else if (action === 'reject' && callState?.incoming && callState?.active) {
-      endCall();
+      endCallRef.current?.();
       const url = new URL(window.location);
       url.searchParams.delete('action');
       window.history.replaceState({}, '', url);
     }
-  }, [callState?.incoming, callState?.active, answerCall, endCall]);
+  }, [callState?.incoming, callState?.active]);
 
   const handleAdminControl = async (targetUid, actionType) => {
     if (!callState?.callId) return;
@@ -2323,15 +2424,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                 consolidatedChats.map((chat) => (
                   <button 
                     key={chat._id} 
-                    onClick={() => {
-                      setSelectedChat(chat);
-                      const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
-                      setChats((current) => current.map((item) => {
-                        const itemOtherId = item.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
-                        const isMatch = item._id === chat._id || (chat.type === 'direct' && item.type === 'direct' && itemOtherId === otherId);
-                        return isMatch ? { ...item, unreadCount: 0 } : item;
-                      }));
-                    }} 
+                    onClick={() => handleChatClick(chat)} 
                     onMouseDown={() => handleChatTouchStart(chat)}
                     onMouseUp={() => handleChatTouchEnd(chat)}
                     onMouseLeave={() => handleChatTouchEnd(chat)}

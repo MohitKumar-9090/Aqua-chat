@@ -54,6 +54,22 @@ const staleWhileRevalidate = async (request) => {
   return cached || fresh;
 };
 
+const cacheFirst = async (request) => {
+  const cache = await caches.open(CACHE_VERSION);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+
+  try {
+    const fresh = await fetch(request);
+    if (fresh?.ok && request.method === 'GET') {
+      cache.put(request, fresh.clone());
+    }
+    return fresh;
+  } catch (error) {
+    throw error;
+  }
+};
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
@@ -93,7 +109,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (isHashedAsset || request.destination === 'script' || request.destination === 'style' || request.destination === 'image') {
+  if (isHashedAsset) {
+    event.respondWith(cacheFirst(request));
+    return;
+  }
+
+  if (request.destination === 'script' || request.destination === 'style' || request.destination === 'image') {
     event.respondWith(staleWhileRevalidate(request));
     return;
   }
