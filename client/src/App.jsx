@@ -115,6 +115,12 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!authState.loading && authState.firebaseUser && authState.profile) {
+      console.log('[STARTUP] APP_READY');
+    }
+  }, [authState.loading, authState.firebaseUser, authState.profile]);
+
   if (authState.loading) {
     return (
       <>
@@ -667,9 +673,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const uid = profile?._id || firebaseUser?.uid;
     if (!uid) return undefined;
     let unsubscribe;
+    let isFirst = true;
     const timer = setTimeout(() => {
       unsubscribe = api.subscribeConnectionRequests(uid, (data) => {
         setConnectionRequests(data);
+        if (isFirst) {
+          console.log('[STARTUP] CONNECTIONS_READY');
+          isFirst = false;
+        }
       });
     }, 2500); // Defer connection requests loading by 2.5 seconds
     return () => {
@@ -775,9 +786,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   useEffect(() => {
     if (!profile?._id) return undefined;
+    let isFirst = true;
     const unsubscribeChats = subscribeChats((nextChats) => {
       setChats(applyPresenceToChats(nextChats, presenceRef.current));
       maybeAutoSelectChat(nextChats);
+      if (isFirst) {
+        console.log('[STARTUP] CHATS_READY');
+        isFirst = false;
+      }
     });
     return () => unsubscribeChats?.();
   }, [profile?._id]);
