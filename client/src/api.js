@@ -24,7 +24,7 @@ import { uploadToCloudinary, uploadImageToCloudinary } from './services/cloudina
 import { pruneStatusViewedLocal } from './utils/statusViewed.js';
 import { onAuthStateChanged } from 'firebase/auth';
 import { onValue, ref as dbRef, serverTimestamp as rtdbTimestamp, set } from 'firebase/database';
-import { auth, firestore, realtimeDb, storage } from './firebase.js';
+import { auth, firestore, realtimeDb, storage, authReadyPromise } from './firebase.js';
 
 const cleanUsername = (value) => {
   if (value == null) return '';
@@ -1301,7 +1301,44 @@ export const api = {
   },
 
   sendMessage: async ({ chatId, sender: senderInput, ...payload }) => {
-    const uid = currentUid();
+    // 1. Wait for Firebase Auth to initialize
+    await authReadyPromise;
+
+    // 2. If current user is null, wait up to 3 seconds for auth state to change/resolve
+    if (!auth?.currentUser) {
+      console.warn('[api.sendMessage] auth.currentUser is null, waiting for auth state resolution...');
+      try {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            unsub();
+            reject(new Error('Authentication timeout: User is not authenticated.'));
+          }, 3000);
+          const unsub = onAuthStateChanged(auth, (user) => {
+            if (user) {
+              clearTimeout(timeout);
+              unsub();
+              resolve(user);
+            }
+          });
+        });
+      } catch (err) {
+        throw new Error('Cannot send message: You must be logged in.');
+      }
+    }
+
+    const uid = auth?.currentUser?.uid || currentUid();
+    const authState = auth?.currentUser ? 'Authenticated' : 'Unauthenticated';
+    const projectId = auth?.app?.options?.projectId || 'unknown-project';
+    const databasePath = `chats/${chatId}/messages`;
+
+    // 3. Debug logging before sending the message
+    console.log('[DEBUG SEND MESSAGE] Info:', {
+      uid,
+      authState,
+      projectId,
+      databasePath
+    });
+
     const chatRef = doc(firestore, 'chats', chatId);
     const chatSnap = await getDoc(chatRef);
     if (!chatSnap.exists()) throw new Error('Chat not found.');
@@ -1347,7 +1384,21 @@ export const api = {
       lastMessage: preview,
       updatedAt: serverTimestamp()
     });
-    await batch.commit();
+
+    try {
+      await batch.commit();
+      console.log('[DEBUG SEND MESSAGE] Sent successfully');
+    } catch (error) {
+      console.error('[DEBUG SEND MESSAGE] Permission or Write Error:', {
+        code: error.code,
+        message: error.message,
+        uid,
+        authState,
+        projectId,
+        databasePath
+      });
+      throw error;
+    }
 
     return {
       message: {

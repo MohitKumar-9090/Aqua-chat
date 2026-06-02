@@ -180,28 +180,14 @@ export const useAuth = () => {
         const currentUser = auth.currentUser;
         if (currentUser) {
           console.log('[STARTUP] Restoring session via auth.currentUser');
+          setAuthReady(true);
           setFirebaseUser(currentUser);
           restoreProfileAndResolve(currentUser);
         } else {
-          // Check cached session
-          const cachedSession = getInitialSession();
-          const cachedProfile = getInitialProfile();
-          if (cachedSession && cachedProfile) {
-            console.log('[STARTUP] Restoring placeholder session from cache');
-            setFirebaseUser({
-              uid: cachedSession.uid,
-              email: cachedSession.email,
-              displayName: cachedSession.displayName,
-              isAnonymous: false,
-              emailVerified: true
-            });
-            setProfile(cachedProfile);
-            console.log('[STARTUP] PROFILE_READY (cached from timeout)');
-          } else {
-            console.log('[STARTUP] No cached session found. Showing AuthScreen.');
-            setFirebaseUser(null);
-            setProfile(null);
-          }
+          console.log('[STARTUP] Auth timeout: no authenticated user found. Redirecting to AuthScreen.');
+          setAuthReady(true);
+          setFirebaseUser(null);
+          setProfile(null);
           setLoading(false);
         }
       }

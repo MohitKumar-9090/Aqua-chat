@@ -19,7 +19,8 @@ import {
   setPersistence,
   indexedDBLocalPersistence,
   EmailAuthProvider,
-  reauthenticateWithCredential
+  reauthenticateWithCredential,
+  onAuthStateChanged
 } from 'firebase/auth';
 import { firebaseConfig, validateClientEnv } from './config/env.js';
 
@@ -30,11 +31,22 @@ export let storage = null;
 export let googleProvider = null;
 export let initError = null;
 export let authPersistenceReady = Promise.resolve();
+export let authReadyPromise = Promise.resolve();
 
 try {
   validateClientEnv();
   const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
   auth = getAuth(app);
+  
+  let resolveAuthReady;
+  authReadyPromise = new Promise((resolve) => {
+    resolveAuthReady = resolve;
+  });
+  const unsub = onAuthStateChanged(auth, (user) => {
+    resolveAuthReady(user);
+    unsub();
+  });
+
   firestore = initializeFirestore(app, {
     localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
   });
@@ -155,4 +167,3 @@ export const googleLogin = async () => {
     }
   }
 };
-
