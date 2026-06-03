@@ -4,7 +4,6 @@ import { requestNotificationPermission } from '../../pwa.js';
 
 export default function InstallAppPrompt({
   apkMetadata,
-  metadataLoading,
   metadataError,
   isDownloading,
   downloadProgress,
@@ -77,17 +76,7 @@ export default function InstallAppPrompt({
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-slate-600 font-medium">Size</span>
-                <span className="text-cyan-900 font-bold">
-                  {metadataLoading ? (
-                    <span className="inline-flex gap-1">
-                      <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-                      <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" style={{ animationDelay: '0.2s' }} />
-                      <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" style={{ animationDelay: '0.4s' }} />
-                    </span>
-                  ) : (
-                    apkMetadata.size
-                  )}
-                </span>
+                <span className="text-cyan-900 font-bold">{apkMetadata.size}</span>
               </div>
             </div>
           )}
@@ -114,7 +103,7 @@ export default function InstallAppPrompt({
           <button
             type="button"
             onClick={onDownload}
-            disabled={isDownloading || metadataLoading || isUnavailable}
+            disabled={isDownloading || isUnavailable}
             className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-cyan-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-cyan-200/50 transition hover:from-cyan-600 hover:to-cyan-700 disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none disabled:cursor-not-allowed active:scale-95"
           >
             {isDownloading ? (
@@ -126,11 +115,6 @@ export default function InstallAppPrompt({
               <>
                 <AlertCircle size={18} />
                 Unavailable
-              </>
-            ) : metadataLoading ? (
-              <>
-                <Download size={18} />
-                Loading...
               </>
             ) : (
               <>
@@ -144,7 +128,7 @@ export default function InstallAppPrompt({
           <button
             type="button"
             onClick={enableNotifications}
-            disabled={isDownloading || isUnavailable}
+            disabled={isDownloading}
             className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-aqua-50 to-cyan-50 px-5 py-3 text-sm font-black text-cyan-900 border border-cyan-200/50 shadow-sm transition hover:from-aqua-100 hover:to-cyan-100 hover:border-cyan-300/50 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
           >
             {notifications === 'granted' ? (

@@ -266,7 +266,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [requestsOpen, setRequestsOpen] = useState(false);
   const {
     apkMetadata,
-    metadataLoading,
     metadataError,
     downloadProgress,
     isDownloading,
@@ -2742,7 +2741,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         <Suspense fallback={null}>
           <InstallAppPrompt
             apkMetadata={apkMetadata}
-            metadataLoading={metadataLoading}
             metadataError={metadataError}
             isDownloading={isDownloading}
             downloadProgress={downloadProgress}

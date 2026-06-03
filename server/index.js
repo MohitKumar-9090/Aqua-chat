@@ -3,58 +3,11 @@ dotenv.config();
 import express from 'express';
 import cors from 'cors';
 import { v2 as cloudinary } from 'cloudinary';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
-
-// Serve APK files from downloads directory
-app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
-
-// ─── Utilities ───────────────────────────────────────────────────────
-
-/**
- * Format bytes to human-readable size string
- */
-const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round((bytes / Math.pow(k, i)) * 10) / 10 + ' ' + sizes[i];
-};
-
-/**
- * Get APK file information
- */
-const getApkInfo = () => {
-  try {
-    const apkPath = path.join(__dirname, 'downloads', 'AquaChat.apk');
-    const stats = fs.statSync(apkPath);
-    return {
-      name: 'AquaChat',
-      version: 'v1.0.0',
-      size: formatFileSize(stats.size),
-      sizeBytes: stats.size,
-      available: true
-    };
-  } catch (error) {
-    console.warn('[APK] File not found:', error.message);
-    return {
-      name: 'AquaChat',
-      version: 'v1.0.0',
-      size: 'unavailable',
-      available: false
-    };
-  }
-};
 
 const PORT = process.env.PORT || 5000;
 
@@ -122,16 +75,6 @@ const verifyAuth = async (req, res, next) => {
 
 app.get('/', (req, res) => {
   res.send('AquaChat Firebase Backend Running');
-});
-
-/**
- * GET /api/apk-info
- * Returns current APK metadata including file size
- * No authentication required
- */
-app.get('/api/apk-info', (req, res) => {
-  const apkInfo = getApkInfo();
-  res.json(apkInfo);
 });
 
 /**

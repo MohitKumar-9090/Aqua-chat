@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { isAndroid, isIos, isPwaDisplayMode, isSecureContext } from '../pwa.js';
 import { requestNotificationPermission } from '../pwa.js';
 
+const APK_URL = 'https://github.com/MohitKumar-9090/Aqua-chat/releases/latest/download/Aqua.chat.apk';
 const APK_DISMISS_KEY = 'aquachat_apk_dismissed_at';
 const APK_DISMISS_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -16,57 +17,20 @@ const isDismissedWithin24Hours = () => {
 
 export const useApkDownload = () => {
   const [apkMetadata, setApkMetadata] = useState({
-    name: 'AquaChat',
-    version: 'Latest',
-    size: 'Loading...',
+    name: 'AquaChat Android App',
+    version: 'v1.0.0',
+    size: '93.6 MB',
     available: true
   });
-  const [metadataLoading, setMetadataLoading] = useState(true);
+  const [metadataLoading, setMetadataLoading] = useState(false);
   const [metadataError, setMetadataError] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const isAndroidDevice = isAndroid();
 
-  // Fetch APK metadata on mount
-  useEffect(() => {
-    const fetchApkMetadata = async () => {
-      try {
-        setMetadataLoading(true);
-        setMetadataError(false);
-        console.log('[APK] Fetching metadata...');
-        
-        const response = await fetch('/api/apk-info');
-        if (!response.ok) {
-          throw new Error(`Failed to fetch APK metadata: ${response.statusText}`);
-        }
-        const metadata = await response.json();
-        console.log('[APK] Metadata loaded:', metadata);
-        setApkMetadata(metadata);
-        
-        if (!metadata.available) {
-          setMetadataError(true);
-        }
-      } catch (error) {
-        console.error('[APK] Metadata fetch failed:', error);
-        setMetadataError(true);
-        setApkMetadata(prev => ({
-          ...prev,
-          size: 'Latest Version',
-          available: true // Still allow download even if metadata fails
-        }));
-      } finally {
-        setMetadataLoading(false);
-      }
-    };
-
-    fetchApkMetadata();
-  }, []);
-
   // Show first-visit prompt on Android devices
   useEffect(() => {
-    if (metadataLoading) return;
-    
     if (isAndroidDevice && !isDismissedWithin24Hours()) {
       console.log('[APK Install] Android device detected - showing first-visit prompt');
       // Show immediately on Android (3.5s delay for better UX)
@@ -102,7 +66,7 @@ export const useApkDownload = () => {
     setDownloadProgress(0);
 
     try {
-      const response = await fetch('/downloads/AquaChat.apk');
+      const response = await fetch(APK_URL);
       
       if (!response.ok) {
         throw new Error(`Download failed: ${response.statusText}`);
@@ -138,7 +102,7 @@ export const useApkDownload = () => {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'AquaChat.apk';
+      link.download = 'Aqua.chat.apk';
       
       // Trigger download
       document.body.appendChild(link);
@@ -152,7 +116,7 @@ export const useApkDownload = () => {
       if (isAndroidDevice) {
         // Attempt to open the file with system handler
         setTimeout(() => {
-          window.location.href = 'content://downloads/AquaChat.apk';
+          window.location.href = 'content://downloads/Aqua.chat.apk';
         }, 1000);
       }
 
