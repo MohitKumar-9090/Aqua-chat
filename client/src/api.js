@@ -83,36 +83,66 @@ const safeIsoString = (val) => {
 };
 
 
+let uidMismatchLogged = false;
+
+const cachedUidSnapshot = () => {
+  if (typeof localStorage === 'undefined') return {};
+  const snapshot = {};
+  try {
+    const cached = localStorage.getItem('aquachat_session');
+    if (cached) {
+      const session = JSON.parse(cached);
+      if (session?.uid) snapshot.sessionUid = String(session.uid).trim();
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const cachedProfile = localStorage.getItem('aquachat_profile');
+    if (cachedProfile) {
+      const profile = JSON.parse(cachedProfile);
+      if (profile?._id || profile?.uid) snapshot.profileUid = String(profile._id || profile.uid).trim();
+    }
+  } catch {
+    // ignore
+  }
+  return snapshot;
+};
+
 const currentUid = () => {
-  let uid = auth.currentUser?.uid;
-  if (!uid) {
-    try {
-      const cached = localStorage.getItem('aquachat_session');
-      if (cached) {
-        const session = JSON.parse(cached);
-        if (session && session.uid && (Date.now() - (session.timestamp || 0) < 24 * 60 * 60 * 1000)) {
-          uid = session.uid;
-        }
-      }
-    } catch (err) {
-      // ignore
-    }
-  }
-  if (!uid) {
-    try {
-      const cachedProfile = localStorage.getItem('aquachat_profile');
-      if (cachedProfile) {
-        const profile = JSON.parse(cachedProfile);
-        if (profile && (profile._id || profile.uid)) {
-          uid = profile._id || profile.uid;
-        }
-      }
-    } catch (err) {
-      // ignore
-    }
-  }
+  const uid = String(auth?.currentUser?.uid || '').trim();
   if (!uid) throw new Error('You must be logged in.');
-  return String(uid).trim();
+
+  const cached = cachedUidSnapshot();
+  const hasMismatch =
+    (cached.sessionUid && cached.sessionUid !== uid) ||
+    (cached.profileUid && cached.profileUid !== uid);
+
+  if (hasMismatch && !uidMismatchLogged) {
+    uidMismatchLogged = true;
+    console.warn('[Firebase UID mismatch] Using Firebase Auth UID for protected requests.', {
+      authUid: uid,
+      ...cached
+    });
+  }
+
+  return uid;
+};
+
+const requestContext = (path, extra = {}) => ({
+  path,
+  authUid: auth?.currentUser?.uid || null,
+  authState: auth?.currentUser ? 'Authenticated' : 'Unauthenticated',
+  projectId: auth?.app?.options?.projectId || 'unknown-project',
+  ...extra
+});
+
+const logFirebaseDenied = (label, path, error, extra = {}) => {
+  console.error(`[Firebase request failed] ${label}`, {
+    code: error?.code,
+    message: error?.message,
+    ...requestContext(path, extra)
+  });
 };
 
 const presentUser = (id, data = {}) => {
@@ -531,6 +561,12 @@ export const subscribeChats = (handler) => {
         }
       },
       (error) => {
+        const path = `chats where participantIds array-contains ${uid}`;
+        logFirebaseDenied('listen chats', path, error);
+        if (error?.code === 'permission-denied') {
+          isSubscribed = false;
+          return;
+        }
         console.warn('[subscribeChats] Firestore listener error, restarting:', error.message);
         if (unsubscribe) unsubscribe();
         if (isSubscribed) {
@@ -719,7 +755,11 @@ export const subscribeMessages = (chatId, handler) => {
         if (hasChanges) emit();
       },
       (error) => {
-        console.error('Message listener error:', error);
+        const path = `chats/${chatId}/messages`;
+        logFirebaseDenied('listen messages', path, error, {
+          query: q === primaryQuery ? 'orderBy clientCreatedAt asc limit 100' : 'limit 100 fallback'
+        });
+        if (error?.code === 'permission-denied') return;
         if (q === primaryQuery) {
           attach(query(collection(firestore, 'chats', chatId, 'messages'), limit(100)));
         }
@@ -819,21 +859,26 @@ const typingUserCache = new Map();
 
 export const subscribeTyping = (chatId, handler) => {
   const uid = currentUid();
-  return onValue(dbRef(realtimeDb, `typing/${chatId}`), async (snap) => {
-    const typing = snap.val() || {};
-    const otherUid = Object.keys(typing).find((id) => id !== uid && typing[id]?.isTyping);
-    if (!otherUid) {
-      handler(null);
-      return;
-    }
-    if (typingUserCache.has(otherUid)) {
-      handler(typingUserCache.get(otherUid));
-      return;
-    }
-    const user = await readUserCached(otherUid);
-    if (user) typingUserCache.set(otherUid, user);
-    handler(user);
-  });
+  const path = `typing/${chatId}`;
+  return onValue(
+    dbRef(realtimeDb, path),
+    async (snap) => {
+      const typing = snap.val() || {};
+      const otherUid = Object.keys(typing).find((id) => id !== uid && typing[id]?.isTyping);
+      if (!otherUid) {
+        handler(null);
+        return;
+      }
+      if (typingUserCache.has(otherUid)) {
+        handler(typingUserCache.get(otherUid));
+        return;
+      }
+      const user = await readUserCached(otherUid);
+      if (user) typingUserCache.set(otherUid, user);
+      handler(user);
+    },
+    (error) => logFirebaseDenied('listen typing', path, error, { database: 'realtime' })
+  );
 };
 
 export const setTyping = (chatId, isTyping) => {
@@ -852,30 +897,39 @@ export const canContactUser = (blockState, peerId) => {
 
 export const subscribeBlockState = (uid, handler) => {
   if (!uid) return () => {};
-  const state = { blocked: new Set(), blockedBy: new Set() };
-  const emit = () => handler({ blocked: new Set(state.blocked), blockedBy: new Set(state.blockedBy) });
-
-  const unsubBlocked = onSnapshot(collection(firestore, 'users', uid, 'blocked'), (snap) => {
-    state.blocked = new Set(snap.docs.map((docSnap) => normalizeUid(docSnap.id)));
-    emit();
-  });
-  const unsubBlockedBy = onSnapshot(collection(firestore, 'users', uid, 'blockedBy'), (snap) => {
-    state.blockedBy = new Set(snap.docs.map((docSnap) => normalizeUid(docSnap.id)));
-    emit();
-  });
-
-  return () => {
-    unsubBlocked();
-    unsubBlockedBy();
-  };
+  return onSnapshot(
+    doc(firestore, 'users', uid),
+    (snap) => {
+      const data = snap.exists() ? snap.data() : {};
+      const blockedArr = data.blocked || data.blockedUsers || [];
+      const blockedByArr = data.blockedBy || [];
+      handler({
+        blocked: new Set(blockedArr.map(normalizeUid)),
+        blockedBy: new Set(blockedByArr.map(normalizeUid))
+      });
+    },
+    (error) => logFirebaseDenied('listen user block status', `users/${uid}`, error)
+  );
 };
 
 const assertContactAllowed = async (transaction, uid, otherUids) => {
   for (const otherUid of otherUids) {
-    const theyBlock = await transaction.get(doc(firestore, 'users', otherUid, 'blocked', uid));
-    if (theyBlock.exists()) throw new Error('You cannot contact this user.');
-    const iBlock = await transaction.get(doc(firestore, 'users', uid, 'blocked', otherUid));
-    if (iBlock.exists()) throw new Error('Unblock this user to continue.');
+    const peerSnap = await transaction.get(doc(firestore, 'users', otherUid));
+    if (peerSnap.exists()) {
+      const peerData = peerSnap.data() || {};
+      const peerBlocked = peerData.blocked || peerData.blockedUsers || [];
+      if (peerBlocked.includes(uid)) {
+        throw new Error('You cannot contact this user.');
+      }
+    }
+    const meSnap = await transaction.get(doc(firestore, 'users', uid));
+    if (meSnap.exists()) {
+      const meData = meSnap.data() || {};
+      const myBlocked = meData.blocked || meData.blockedUsers || [];
+      if (myBlocked.includes(otherUid)) {
+        throw new Error('Unblock this user to continue.');
+      }
+    }
   }
 };
 
@@ -883,12 +937,22 @@ const ensureContactAllowed = async (uidInput, otherUidInput) => {
   const uid = normalizeUid(uidInput);
   const otherUid = normalizeUid(otherUidInput);
   if (!uid || !otherUid || uid === otherUid) return;
-  const [theyBlock, iBlock] = await Promise.all([
-    getDoc(doc(firestore, 'users', otherUid, 'blocked', uid)),
-    getDoc(doc(firestore, 'users', uid, 'blocked', otherUid))
+  const [meSnap, peerSnap] = await Promise.all([
+    getDoc(doc(firestore, 'users', uid)),
+    getDoc(doc(firestore, 'users', otherUid))
   ]);
-  if (theyBlock.exists()) throw new Error('You cannot contact this user.');
-  if (iBlock.exists()) throw new Error('Unblock this user to continue.');
+  const meData = meSnap.exists() ? meSnap.data() : {};
+  const peerData = peerSnap.exists() ? peerSnap.data() : {};
+
+  const myBlocked = meData.blocked || meData.blockedUsers || [];
+  const peerBlocked = peerData.blocked || peerData.blockedUsers || [];
+
+  if (peerBlocked.includes(uid) || (meData.blockedBy && meData.blockedBy.includes(otherUid))) {
+    throw new Error('You cannot contact this user.');
+  }
+  if (myBlocked.includes(otherUid) || (peerData.blockedBy && peerData.blockedBy.includes(uid))) {
+    throw new Error('Unblock this user to continue.');
+  }
 };
 
 export const api = {
@@ -1326,7 +1390,7 @@ export const api = {
       }
     }
 
-    const uid = auth?.currentUser?.uid || currentUid();
+    const uid = currentUid();
     const authState = auth?.currentUser ? 'Authenticated' : 'Unauthenticated';
     const projectId = auth?.app?.options?.projectId || 'unknown-project';
     const databasePath = `chats/${chatId}/messages`;
@@ -1389,13 +1453,12 @@ export const api = {
       await batch.commit();
       console.log('[DEBUG SEND MESSAGE] Sent successfully');
     } catch (error) {
-      console.error('[DEBUG SEND MESSAGE] Permission or Write Error:', {
-        code: error.code,
-        message: error.message,
+      logFirebaseDenied('[DEBUG SEND MESSAGE] batch commit', databasePath, error, {
         uid,
         authState,
         projectId,
-        databasePath
+        parentPath: `chats/${chatId}`,
+        messagePath: `${databasePath}/${messageRef.id}`
       });
       throw error;
     }
@@ -1562,9 +1625,13 @@ export const api = {
 
   subscribeUser: (uid, handler) => {
     if (!uid) return () => {};
-    return onSnapshot(doc(firestore, 'users', uid), (snap) => {
-      handler(snap.exists() ? presentUser(snap.id, snap.data()) : null);
-    });
+    return onSnapshot(
+      doc(firestore, 'users', uid),
+      (snap) => {
+        handler(snap.exists() ? presentUser(snap.id, snap.data()) : null);
+      },
+      (error) => logFirebaseDenied('listen user profile', `users/${uid}`, error)
+    );
   },
 
   seen: async (chatId) => {
@@ -1653,14 +1720,18 @@ export const api = {
 
   subscribeStatuses: (handler) => {
     const q = query(collection(firestore, 'statuses'), orderBy('createdAt', 'desc'), limit(60));
-    return onSnapshot(q, async (snap) => {
-      const now = Date.now();
-      const statuses = (
-        await Promise.all(snap.docs.map((statusSnap) => mapStatusDoc(statusSnap)))
-      ).filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > now);
-      pruneStatusViewedLocal(statuses.map((item) => item._id));
-      handler(statuses);
-    });
+    return onSnapshot(
+      q,
+      async (snap) => {
+        const now = Date.now();
+        const statuses = (
+          await Promise.all(snap.docs.map((statusSnap) => mapStatusDoc(statusSnap)))
+        ).filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > now);
+        pruneStatusViewedLocal(statuses.map((item) => item._id));
+        handler(statuses);
+      },
+      (error) => logFirebaseDenied('listen statuses', 'statuses orderBy createdAt desc limit 60', error)
+    );
   },
 
   createStatus: async (body) => {
@@ -1811,7 +1882,12 @@ export const api = {
         state.incoming = requests;
         emit();
       },
-      () => {
+      (error) => {
+        logFirebaseDenied(
+          'listen incoming connection requests',
+          `connectionRequests where receiverId == ${uid} and status == pending`,
+          error
+        );
         state.incoming = [];
         emit();
       }
@@ -1835,7 +1911,12 @@ export const api = {
         state.sent = requests;
         emit();
       },
-      () => {
+      (error) => {
+        logFirebaseDenied(
+          'listen sent connection requests',
+          `connectionRequests where senderId == ${uid} and status == pending`,
+          error
+        );
         state.sent = [];
         emit();
       }
@@ -1861,13 +1942,12 @@ export const api = {
     const blockedId = normalizeUid(blockedUid);
     if (blockedId === uid) throw new Error('You cannot block yourself.');
     const batch = writeBatch(firestore);
-    batch.set(doc(firestore, 'users', uid, 'blocked', blockedId), {
-      blockedUid: blockedId,
-      blockedAt: serverTimestamp()
+    batch.update(doc(firestore, 'users', uid), {
+      blocked: arrayUnion(blockedId),
+      blockedUsers: arrayUnion(blockedId)
     });
-    batch.set(doc(firestore, 'users', blockedId, 'blockedBy', uid), {
-      blockerId: uid,
-      blockedAt: serverTimestamp()
+    batch.update(doc(firestore, 'users', blockedId), {
+      blockedBy: arrayUnion(uid)
     });
     await batch.commit();
     return { ok: true };
@@ -1877,8 +1957,13 @@ export const api = {
     const uid = currentUid();
     const blockedId = normalizeUid(blockedUid);
     const batch = writeBatch(firestore);
-    batch.delete(doc(firestore, 'users', uid, 'blocked', blockedId));
-    batch.delete(doc(firestore, 'users', blockedId, 'blockedBy', uid));
+    batch.update(doc(firestore, 'users', uid), {
+      blocked: arrayRemove(blockedId),
+      blockedUsers: arrayRemove(blockedId)
+    });
+    batch.update(doc(firestore, 'users', blockedId), {
+      blockedBy: arrayRemove(uid)
+    });
     await batch.commit();
     return { ok: true };
   },
@@ -1886,24 +1971,40 @@ export const api = {
   subscribeBlockedUsers: (uidInput, handler) => {
     const uid = normalizeUid(uidInput);
     if (!uid) return () => {};
-    return onSnapshot(collection(firestore, 'users', uid, 'blocked'), async (snap) => {
-      const rows = await Promise.all(snap.docs.map(async (docSnap) => {
-        const blockedUid = normalizeUid(docSnap.id || docSnap.data()?.blockedUid);
-        const user = await readUserCached(blockedUid);
-        return {
-          _id: blockedUid,
-          blockedAt: safeIsoString(docSnap.data()?.blockedAt),
-          user: user || { _id: blockedUid, displayName: 'AquaChat user', username: '' }
-        };
-      }));
-      handler(rows.filter((row) => row._id));
-    });
+    return onSnapshot(
+      doc(firestore, 'users', uid),
+      async (snap) => {
+        if (!snap.exists()) {
+          handler([]);
+          return;
+        }
+        const data = snap.data() || {};
+        const blockedList = data.blocked || data.blockedUsers || [];
+        const rows = await Promise.all(blockedList.map(async (blockedId) => {
+          const cleanId = normalizeUid(blockedId);
+          const user = await readUserCached(cleanId);
+          return {
+            _id: cleanId,
+            blockedAt: data.updatedAt ? safeIsoString(data.updatedAt) : new Date().toISOString(),
+            user: user || { _id: cleanId, displayName: 'AquaChat user', username: '' }
+          };
+        }));
+        handler(rows.filter((row) => row._id));
+      },
+      (error) => {
+        logFirebaseDenied('listen blocked users', `users/${uid}`, error);
+        handler([]);
+      }
+    );
   },
 
   isUserBlocked: async (blockedUid) => {
     const uid = currentUid();
-    const snap = await getDoc(doc(firestore, 'users', uid, 'blocked', blockedUid));
-    return snap.exists();
+    const snap = await getDoc(doc(firestore, 'users', uid));
+    if (!snap.exists()) return false;
+    const data = snap.data() || {};
+    const blockedList = data.blocked || data.blockedUsers || [];
+    return blockedList.includes(normalizeUid(blockedUid));
   },
 
   exportChatHistory: async (chatId) => {

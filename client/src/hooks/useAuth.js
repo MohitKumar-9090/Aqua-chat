@@ -367,7 +367,7 @@ export const useAuth = () => {
       error,
       needsEmailVerification,
       logout: async () => {
-        const uid = auth?.currentUser?.uid || profile?._id;
+        const uid = auth?.currentUser?.uid || firebaseUser?.uid;
         if (uid) await stopPresenceSession(uid);
         localStorage.removeItem(SESSION_STORAGE_KEY);
         localStorage.removeItem(PROFILE_STORAGE_KEY);

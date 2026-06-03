@@ -23,7 +23,7 @@ import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
 import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage, startSwKeepalive } from './pwa.js';
-import { usePwaInstall } from './hooks/usePwaInstall.js';
+import { useApkDownload } from './hooks/useApkDownload.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import { getCallRuntime } from './utils/callRuntime.js';
 import { getCallMediaStream } from './utils/media.js';
@@ -265,17 +265,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const [connectionRequests, setConnectionRequests] = useState({ incoming: [], sent: [] });
   const [requestsOpen, setRequestsOpen] = useState(false);
   const {
-    canInstall,
-    showInstallButton,
-    isStandalone,
-    isIos,
-    isDesktopChromium,
+    apkMetadata,
+    metadataLoading,
+    metadataError,
+    downloadProgress,
+    isDownloading,
     showPrompt: showInstall,
-    installInstructions,
-    install: installApp,
+    downloadApk,
     dismissPrompt: dismissInstallPrompt,
-    openPrompt: openInstallPrompt
-  } = usePwaInstall();
+    showInstallButton
+  } = useApkDownload();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const peerConnectionRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -657,7 +656,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const presenceRef = useRef({});
 
   useEffect(() => {
-    const uid = profile?._id || firebaseUser?.uid;
+    const uid = firebaseUser?.uid;
     if (!uid) return undefined;
     let unsubscribe;
     const timer = setTimeout(() => {
@@ -670,7 +669,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [profile?._id, firebaseUser?.uid]);
 
   useEffect(() => {
-    const uid = profile?._id || firebaseUser?.uid;
+    const uid = firebaseUser?.uid;
     if (!uid) return undefined;
     let unsubscribe;
     let isFirst = true;
@@ -844,11 +843,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [profile?._id]);
 
   useEffect(() => {
-    if (!profile?._id || !chats || chats.length === 0) return;
+    const uid = firebaseUser?.uid;
+    if (!uid || !chats || chats.length === 0) return;
     
     // Debounce to prevent writing on every rapid chat/presence reference change
     const timer = setTimeout(() => {
-      const uid = profile._id;
       chats.forEach((chat) => {
         const lastMsg = chat.lastMessage;
         if (
@@ -1233,7 +1232,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const handleDisconnect = async (userId) => {
-    const currentUidStr = String(profile?._id || firebaseUser?.uid || '').trim();
+    const currentUidStr = String(firebaseUser?.uid || profile?._id || '').trim();
     const targetPeerId = String(userId || '').trim();
     try {
       await api.disconnectUser(targetPeerId);
@@ -1271,10 +1270,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const handleInstall = async () => {
-    const choice = await installApp();
-    if (choice?.outcome === 'accepted') {
+    const result = await downloadApk();
+    if (result?.success) {
       const permission = await requestNotificationPermission();
-      setNotifPermission(permission);
       if (permission === 'granted') {
         const token = await registerMessagingToken();
         if (token) {
@@ -1299,7 +1297,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       pending: true,
       chat: chatId,
       sender: profile,
-      senderId: profile._id || firebaseUser?.uid,
+      senderId: firebaseUser?.uid || profile._id,
       type: payload.type || 'text',
       body: payload.body || '',
       mediaUrl: payload.mediaUrl || '',
@@ -1600,7 +1598,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const signalingUid = () => {
-    const uid = auth?.currentUser?.uid || profile?._id;
+    const uid = auth?.currentUser?.uid || firebaseUser?.uid;
     if (!uid) throw new Error('You must be signed in to place or answer a call.');
     return uid;
   };
@@ -1762,7 +1760,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           return;
         }
         const connection = peerConnectionsRef.current.get(remoteUid);
-        const myUid = auth?.currentUser?.uid || profile?._id;
+        const myUid = auth?.currentUser?.uid || firebaseUser?.uid;
 
         // --- Admin sync (merged from standalone useEffect) ---
         if (room.participantsState?.[myUid]?.removed) {
@@ -2136,7 +2134,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       void recordCallHistory(state);
     }
     const endingCallId = activeCallId || state?.callId;
-    const from = state?.from || auth?.currentUser?.uid || profile?._id;
+    const from = state?.from || auth?.currentUser?.uid || firebaseUser?.uid;
     const to = state?.to || selectedPeer?._id;
     
     // Signal end to other party immediately before cleanup
@@ -2259,7 +2257,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   }, [callState?.participantsState, callState?.active]);
 
   useEffect(() => {
-    const uid = auth?.currentUser?.uid || profile?._id;
+    const uid = auth?.currentUser?.uid || firebaseUser?.uid;
     if (!uid) return undefined;
 
     let cancelled = false;
@@ -2375,13 +2373,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             <div className="flex items-center gap-1">
               {showInstallButton && (
                 <button
-                  onClick={() => (canInstall ? handleInstall() : openInstallPrompt())}
-                  className={`rounded-2xl p-2.5 transition duration-200 ${
-                    canInstall
-                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-200/60 hover:bg-cyan-600'
-                      : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'
-                  }`}
-                  title={canInstall ? 'Install AquaChat' : installInstructions}
+                  onClick={handleInstall}
+                  disabled={isDownloading}
+                  className="rounded-2xl bg-cyan-500 p-2.5 text-white shadow-md shadow-cyan-200/60 transition duration-200 hover:bg-cyan-600 disabled:opacity-75 disabled:cursor-not-allowed"
+                  title="Download AquaChat APK"
                 >
                   <Download size={18} />
                 </button>
@@ -2583,7 +2578,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                       setSelectedChat(null);
                       setGroupInfoOpen(false);
                       try {
-                        const memberId = String(profile?._id || firebaseUser?.uid || '').trim();
+                        const memberId = String(firebaseUser?.uid || profile?._id || '').trim();
                         await api.removeMember(id, memberId);
                       } catch (error) {
                         console.error('[Exit Group Error] ID:', id, '| Error:', error);
@@ -2738,7 +2733,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
             remoteMediaEpoch={remoteMediaEpoch}
             callTimer={callTimer}
             remoteParticipants={remoteParticipants}
-            currentUid={profile?._id || firebaseUser?.uid}
+            currentUid={firebaseUser?.uid || profile?._id}
             onAdminControl={handleAdminControl}
           />
         </Suspense>
@@ -2746,11 +2741,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       {showInstall && (
         <Suspense fallback={null}>
           <InstallAppPrompt
-            canInstall={canInstall}
-            isIos={isIos}
-            isDesktopChromium={isDesktopChromium}
-            installInstructions={installInstructions}
-            onInstall={handleInstall}
+            apkMetadata={apkMetadata}
+            metadataLoading={metadataLoading}
+            metadataError={metadataError}
+            isDownloading={isDownloading}
+            downloadProgress={downloadProgress}
+            onDownload={handleInstall}
             onClose={dismissInstallPrompt}
           />
         </Suspense>
@@ -2786,7 +2782,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                     await api.deleteGroupChat(id);
                     toastSuccess('Group deleted successfully');
                   } catch (error) {
-                    console.error('[Delete Group Error] ID:', id, '| UID:', profile?._id || firebaseUser?.uid, '| Error:', error);
+                    console.error('[Delete Group Error] ID:', id, '| UID:', firebaseUser?.uid || profile?._id, '| Error:', error);
                     const msg = error?.code === 'permission-denied'
                       ? 'You do not have permission to delete this group. Only the group creator or admins can delete it.'
                       : (error.message || 'Could not delete group.');
@@ -2808,9 +2804,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
           chat={activeMenuChat}
           amAdmin={
             activeMenuChat?.type === 'group' && (
-              String(activeMenuChat.createdBy || '').trim() === String(profile?._id || firebaseUser?.uid || '').trim() ||
+              String(activeMenuChat.createdBy || '').trim() === String(firebaseUser?.uid || profile?._id || '').trim() ||
               activeMenuChat.participants?.some(
-                (p) => String(p.user?._id || '').trim() === String(profile?._id || firebaseUser?.uid || '').trim() && p.role === 'admin'
+                (p) => String(p.user?._id || '').trim() === String(firebaseUser?.uid || profile?._id || '').trim() && p.role === 'admin'
               )
             )
           }
@@ -2828,7 +2824,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                 await api.disconnectUser(peerId);
                 toastSuccess('Disconnected successfully');
               } catch (err) {
-                console.error('[Disconnect Error] Peer ID:', peerId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
+                console.error('[Disconnect Error] Peer ID:', peerId, '| UID:', String(firebaseUser?.uid || profile?._id || '').trim(), '| Error:', err);
                 toastError(err.message || 'Could not disconnect user');
                 // Revert on failure
                 refresh();
@@ -2846,14 +2842,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
               await api.deletePersonalChat(chatId);
               toastSuccess('Chat deleted successfully');
             } catch (err) {
-              console.error('[Delete Chat Error] Chat ID:', chatId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
+              console.error('[Delete Chat Error] Chat ID:', chatId, '| UID:', String(firebaseUser?.uid || profile?._id || '').trim(), '| Error:', err);
               toastError(err.message || 'Could not delete chat');
               // Revert on failure
               refresh();
             }
           }}
           onExitGroup={async (chat) => {
-            const memberId = String(profile?._id || firebaseUser?.uid || '').trim();
+            const memberId = String(firebaseUser?.uid || profile?._id || '').trim();
             try {
               await api.removeMember(chat._id, memberId);
               toastSuccess('Left group successfully');

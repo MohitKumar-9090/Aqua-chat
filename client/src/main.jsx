@@ -2,12 +2,10 @@ import React, { lazy, Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import './index.css';
-import { captureInstallPrompt, registerServiceWorker } from './pwa.js';
+import { registerServiceWorker } from './pwa.js';
 import { scheduleIdle } from './utils/scheduleIdle.js';
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('beforeinstallprompt', captureInstallPrompt, { passive: false });
-
   scheduleIdle(() => {
     registerServiceWorker();
   }, { timeout: 1200 });

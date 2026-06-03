@@ -219,7 +219,7 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, cha
             />
           )}
 
-          {page === 'blocked' && <BlockedUsersPage uid={profile._id || firebaseUser?.uid} setMessage={setMessage} />}
+          {page === 'blocked' && <BlockedUsersPage uid={firebaseUser?.uid || profile._id} setMessage={setMessage} />}
 
           {page === 'privacy' && (
             <StatusPrivacyPage
@@ -244,7 +244,7 @@ export default function ProfileSettings({ firebaseUser, profile, setProfile, cha
 function AccountPage({ profile, firebaseUser }) {
   const rows = [
     ['Gmail / email', profile.email || firebaseUser?.email || 'Not available'],
-    ['Username / ID', profile.username ? `@${profile.username}` : profile._id || firebaseUser?.uid || 'Not available'],
+    ['Username / ID', profile.username ? `@${profile.username}` : firebaseUser?.uid || profile._id || 'Not available'],
     ['Display name', profile.displayName || firebaseUser?.displayName || 'AquaChat user']
   ];
   return (
