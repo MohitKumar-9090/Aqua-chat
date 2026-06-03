@@ -2,18 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { isAndroid, isIos, isPwaDisplayMode, isSecureContext } from '../pwa.js';
 import { requestNotificationPermission } from '../pwa.js';
 
-const APK_DOWNLOAD_KEY = 'aquachat_apk_dismissed_at';
-const DISMISS_TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-
-const wasDismissedRecently = () => {
-  try {
-    const dismissedAt = Number(localStorage.getItem(APK_DOWNLOAD_KEY) || 0);
-    return dismissedAt && Date.now() - dismissedAt < DISMISS_TTL_MS;
-  } catch {
-    return false;
-  }
-};
-
 export const useApkDownload = () => {
   const [apkMetadata, setApkMetadata] = useState({
     name: 'AquaChat',
@@ -64,7 +52,7 @@ export const useApkDownload = () => {
     if (metadataLoading) return;
     
     const timer = window.setTimeout(() => {
-      if (!isPwaDisplayMode() && isSecureContext() && !wasDismissedRecently() && apkMetadata.available) {
+      if (!isPwaDisplayMode() && isSecureContext() && apkMetadata.available) {
         setShowPrompt(true);
       }
     }, 3500);
@@ -74,11 +62,6 @@ export const useApkDownload = () => {
 
   const dismissPrompt = useCallback(() => {
     setShowPrompt(false);
-    try {
-      localStorage.setItem(APK_DOWNLOAD_KEY, String(Date.now()));
-    } catch {
-      // ignore
-    }
   }, []);
 
   const downloadApk = useCallback(async () => {
