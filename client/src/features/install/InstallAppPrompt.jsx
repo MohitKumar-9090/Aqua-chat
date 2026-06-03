@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bell, Download, X, AlertCircle } from 'lucide-react';
+import { Bell, Download, X, AlertCircle, Check } from 'lucide-react';
 import { requestNotificationPermission } from '../../pwa.js';
 
 export default function InstallAppPrompt({
@@ -23,75 +23,157 @@ export default function InstallAppPrompt({
   const isUnavailable = metadataError || !apkMetadata.available;
 
   return (
-    <div className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+4.75rem)] z-50 mx-auto max-w-md animate-pop rounded-3xl border border-aqua-100 bg-white/95 p-4 shadow-soft-xl backdrop-blur sm:bottom-[calc(env(safe-area-inset-bottom)+1rem)]">
-      <div className="flex items-start gap-3">
-        <img src="/icon-192.png" alt="" className="h-12 w-12 rounded-2xl shadow-sm" width={48} height={48} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="font-black text-cyan-950">Get AquaChat</h2>
-              {isUnavailable ? (
-                <div className="mt-2 flex items-center gap-2 rounded-2xl bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
-                  <AlertCircle size={14} className="shrink-0" />
-                  APK temporarily unavailable
-                </div>
-              ) : (
-                <div className="mt-1 space-y-1 text-sm leading-5 text-slate-500">
-                  <p>{apkMetadata.name}</p>
-                  <p className="text-xs text-slate-400">
-                    {apkMetadata.version} • {metadataLoading ? 'Loading...' : apkMetadata.size}
-                  </p>
-                </div>
-              )}
-            </div>
-            <button type="button" onClick={onClose} className="rounded-xl p-2 text-slate-400 hover:bg-aqua-50" title="Close" aria-label="Close download prompt">
-              <X size={18} />
-            </button>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4">
+      {/* Backdrop */}
+      <div 
+        className="absolute inset-0 bg-black/20 backdrop-blur-sm transition-opacity duration-300"
+        onClick={onClose}
+      />
+      
+      {/* Modal Card */}
+      <div className="relative w-full max-w-md animate-pop rounded-3xl border border-white/20 bg-gradient-to-br from-white/95 via-white/90 to-cyan-50/50 p-6 shadow-2xl backdrop-blur-xl sm:max-h-[90vh] sm:overflow-y-auto">
+        {/* Close Button */}
+        <button 
+          type="button" 
+          onClick={onClose}
+          className="absolute right-3 top-3 rounded-full p-2 text-slate-400 hover:bg-white/50 hover:text-slate-600 transition"
+          title="Close"
+          aria-label="Close"
+        >
+          <X size={20} />
+        </button>
+
+        {/* Header with Icon */}
+        <div className="flex items-start gap-4 mb-4">
+          <div className="flex-shrink-0">
+            <img 
+              src="/icon-192.png" 
+              alt="AquaChat" 
+              className="h-16 w-16 rounded-3xl shadow-lg border border-white/50"
+              width={64}
+              height={64}
+            />
           </div>
-
-          {isDownloading && !isUnavailable && (
-            <div className="mt-3 space-y-2">
-              <div className="h-2 w-full overflow-hidden rounded-full bg-aqua-100">
-                <div 
-                  className="h-full bg-gradient-to-r from-cyan-400 to-cyan-600 transition-all duration-300 ease-out"
-                  style={{ width: `${downloadProgress}%` }}
-                />
-              </div>
-              <p className="text-xs font-semibold text-cyan-700 text-center">
-                Downloading {downloadProgress}%
-              </p>
-            </div>
-          )}
-
-          {metadataLoading && !isUnavailable && (
-            <div className="mt-3 flex items-center justify-center gap-2 text-sm text-slate-500">
-              <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-              <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" style={{ animationDelay: '0.2s' }} />
-              <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" style={{ animationDelay: '0.4s' }} />
-            </div>
-          )}
-
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onDownload}
-              disabled={isDownloading || metadataLoading || isUnavailable}
-              className="inline-flex items-center gap-2 rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-black text-white shadow-lg shadow-cyan-100 transition hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
-            >
-              <Download size={16} />
-              {isUnavailable ? 'Unavailable' : isDownloading ? 'Downloading...' : 'Download APK'}
-            </button>
-            <button
-              type="button"
-              onClick={enableNotifications}
-              disabled={isDownloading || isUnavailable}
-              className="inline-flex items-center gap-2 rounded-2xl bg-aqua-50 px-4 py-2 text-sm font-black text-cyan-800 transition hover:bg-aqua-100 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Bell size={16} />
-              {notifications === 'granted' ? 'Notifications on' : 'Enable alerts'}
-            </button>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-2xl font-black text-cyan-950">AquaChat Android App</h2>
+            <p className="mt-1 text-sm text-slate-600">Fast • Secure • Real-time Messaging</p>
           </div>
         </div>
+
+        {/* Metadata Section */}
+        <div className="mb-5 rounded-2xl bg-gradient-to-br from-cyan-50 to-aqua-50 p-4 border border-cyan-100/50">
+          {isUnavailable ? (
+            <div className="flex items-center gap-3 text-red-700">
+              <AlertCircle size={18} className="flex-shrink-0" />
+              <div>
+                <p className="font-semibold text-sm">APK temporarily unavailable</p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-600 font-medium">Version</span>
+                <span className="text-cyan-900 font-bold">{apkMetadata.version}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-600 font-medium">Size</span>
+                <span className="text-cyan-900 font-bold">
+                  {metadataLoading ? (
+                    <span className="inline-flex gap-1">
+                      <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+                      <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" style={{ animationDelay: '0.2s' }} />
+                      <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" style={{ animationDelay: '0.4s' }} />
+                    </span>
+                  ) : (
+                    apkMetadata.size
+                  )}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Download Progress */}
+        {isDownloading && !isUnavailable && (
+          <div className="mb-5 space-y-2">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+              <div 
+                className="h-full bg-gradient-to-r from-cyan-400 to-cyan-600 transition-all duration-300 ease-out"
+                style={{ width: `${downloadProgress}%` }}
+              />
+            </div>
+            <p className="text-xs font-semibold text-cyan-700 text-center">
+              Downloading {downloadProgress}%
+            </p>
+          </div>
+        )}
+
+        {/* Buttons */}
+        <div className="space-y-2">
+          {/* Download Button */}
+          <button
+            type="button"
+            onClick={onDownload}
+            disabled={isDownloading || metadataLoading || isUnavailable}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-cyan-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-cyan-200/50 transition hover:from-cyan-600 hover:to-cyan-700 disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none disabled:cursor-not-allowed active:scale-95"
+          >
+            {isDownloading ? (
+              <>
+                <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                Downloading APK
+              </>
+            ) : isUnavailable ? (
+              <>
+                <AlertCircle size={18} />
+                Unavailable
+              </>
+            ) : metadataLoading ? (
+              <>
+                <Download size={18} />
+                Loading...
+              </>
+            ) : (
+              <>
+                <Download size={18} />
+                Download APK
+              </>
+            )}
+          </button>
+
+          {/* Notification Button */}
+          <button
+            type="button"
+            onClick={enableNotifications}
+            disabled={isDownloading || isUnavailable}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-aqua-50 to-cyan-50 px-5 py-3 text-sm font-black text-cyan-900 border border-cyan-200/50 shadow-sm transition hover:from-aqua-100 hover:to-cyan-100 hover:border-cyan-300/50 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+          >
+            {notifications === 'granted' ? (
+              <>
+                <Check size={18} className="text-green-600" />
+                <span className="text-green-700">Notifications on</span>
+              </>
+            ) : (
+              <>
+                <Bell size={18} />
+                Enable Alerts
+              </>
+            )}
+          </button>
+
+          {/* Later Button */}
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-2xl transition active:scale-95"
+          >
+            Later
+          </button>
+        </div>
+
+        {/* Footer Info */}
+        <p className="mt-4 text-center text-xs text-slate-500">
+          🔒 Secure. No account required. Install in seconds.
+        </p>
       </div>
     </div>
   );
