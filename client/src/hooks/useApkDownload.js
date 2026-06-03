@@ -59,84 +59,26 @@ export const useApkDownload = () => {
   }, []);
 
   const downloadApk = useCallback(async () => {
-    if (isDownloading || !apkMetadata.available) return;
-    
-    console.log('[APK Install] Download started');
+    console.log('Download button clicked');
     setIsDownloading(true);
     setDownloadProgress(0);
 
     try {
-      const response = await fetch(APK_URL);
+      window.location.href = APK_URL;
+      console.log('APK URL opened');
       
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.statusText}`);
-      }
-
-      // Get total size for progress tracking
-      const contentLength = response.headers.get('content-length');
-      const total = parseInt(contentLength, 10);
-
-      // Create readable stream for progress tracking
-      const reader = response.body.getReader();
-      const chunks = [];
-      let loaded = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) break;
-        
-        chunks.push(value);
-        loaded += value.length;
-        
-        if (total) {
-          const percentComplete = Math.round((loaded / total) * 100);
-          setDownloadProgress(percentComplete);
-        }
-      }
-
-      // Combine chunks into blob
-      const blob = new Blob(chunks, { type: 'application/vnd.android.package-archive' });
-      
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'Aqua.chat.apk';
-      
-      // Trigger download
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Clean up
-      window.URL.revokeObjectURL(url);
-
-      // Open Android installer if on Android
-      if (isAndroidDevice) {
-        // Attempt to open the file with system handler
-        setTimeout(() => {
-          window.location.href = 'content://downloads/Aqua.chat.apk';
-        }, 1000);
-      }
-
       setDownloadProgress(100);
-      console.log('[APK Install] Download completed');
       dismissPrompt('download_completed');
       
       return { success: true };
     } catch (error) {
       console.error('APK download failed:', error);
-      setDownloadProgress(0);
       return { success: false, error: error.message };
     } finally {
       setIsDownloading(false);
-      // Reset progress after delay
-      setTimeout(() => {
-        setDownloadProgress(0);
-      }, 2000);
+      setDownloadProgress(0);
     }
-  }, [isDownloading, dismissPrompt, apkMetadata.available, isAndroidDevice]);
+  }, [dismissPrompt]);
 
   const showInstallButton = isAndroidDevice;
 
