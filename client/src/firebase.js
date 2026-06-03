@@ -47,9 +47,13 @@ try {
     unsub();
   });
 
-  firestore = initializeFirestore(app, {
-    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
-  });
+  if (typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent || '')) {
+    firestore = initializeFirestore(app, {});
+  } else {
+    firestore = initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+    });
+  }
   realtimeDb = getDatabase(app);
   storage = getStorage(app);
   

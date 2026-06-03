@@ -1124,6 +1124,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setSendEpoch(0);
     setTyping(null);
 
+    // Call seen/deliver immediately on chat open
+    api.deliver(chatId).catch(console.error);
+    api.seen(chatId).catch(console.error);
+
     const unsubscribeMessages = subscribeMessages(chatId, (nextMessages) => {
       if (activeMessagesChatRef.current !== chatId) return;
       setMessages((current) => {
@@ -1157,9 +1161,12 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
 
   const openDirect = async (userId) => {
     const { chat } = await api.createDirectChat(userId);
-    setChats((current) => [chat, ...current.filter((item) => item._id !== chat._id)]);
-    setSelectedChat(chat);
+    const clearedChat = { ...chat, unreadCount: 0 };
+    setChats((current) => [clearedChat, ...current.filter((item) => item._id !== chat._id)]);
+    setSelectedChat(clearedChat);
     setPanel('chats');
+    console.log('[CHAT_OPENED] Chat ID:', chat._id);
+    console.log('[UNREAD_UPDATED] Chat ID:', chat._id, 'Unread count: 0');
   };
 
   const updateUser = (userId, patch) => {
@@ -1167,12 +1174,16 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const openChat = (chat) => {
-    setChats((current) => [chat, ...current.filter((item) => item._id !== chat._id)]);
-    setSelectedChat(chat);
+    const clearedChat = { ...chat, unreadCount: 0 };
+    setChats((current) => [clearedChat, ...current.filter((item) => item._id !== chat._id)]);
+    setSelectedChat(clearedChat);
     setPanel('chats');
+    console.log('[CHAT_OPENED] Chat ID:', chat._id);
+    console.log('[UNREAD_UPDATED] Chat ID:', chat._id, 'Unread count: 0');
   };
 
   const handleChatClick = useCallback((chat) => {
+    console.log('[CHAT_OPENED] Chat ID:', chat._id);
     setSelectedChat(chat);
     const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
     setChats((current) => {
@@ -1188,6 +1199,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         }
         return item;
       });
+      if (changed) {
+        console.log('[UNREAD_UPDATED] Chat ID:', chat._id, 'Unread count: 0');
+      }
       return changed ? next : current;
     });
   }, [profile?._id]);
@@ -1605,6 +1619,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const markCallConnected = () => {
     setCallState((current) => {
       if (!current || current.connectedAt) return current;
+      console.log('[CALL_CONNECTED] Call ID:', current.callId);
       return {
         ...current,
         status: 'active',
@@ -1674,6 +1689,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const setupPeer = async ({ callId, remoteUid, callType, isCaller, remoteOffer = null, skipRoomCreation = false }) => {
+    console.log('[CALL_STARTED] Call ID:', callId, 'Type:', callType);
     // Prevent duplicate peer connections for same remoteUid
     if (peerConnectionsRef.current.has(remoteUid)) {
       console.warn('[Call] Peer connection already exists for', remoteUid);
@@ -2108,7 +2124,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     const startedAt = state.connectedAt || state.startedAt;
     const duration = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
     const callType = state.callType || 'voice';
-    const callStatus = state.incoming && state.status === 'ringing' ? 'missed' : state.status || (duration ? 'completed' : 'missed');
+    const callStatus = (state.status === 'active' || state.connectedAt)
+      ? 'completed'
+      : (state.incoming ? 'missed' : 'cancelled');
     const label = `${callType === 'video' ? 'Video' : 'Voice'} call ${callStatus}`;
 
     try {
@@ -2120,6 +2138,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         callStatus,
         duration
       });
+      console.log('[CALL_HISTORY_SAVED] Chat ID:', chatId, 'Status:', callStatus);
     } catch (error) {
       console.warn('Could not save call history message:', error?.message || error);
     }
@@ -2129,10 +2148,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     stopIncomingRing();
     isAnsweringRef.current = false;
     const state = callStateRef.current;
+    const endingCallId = activeCallId || state?.callId;
+    console.log('[CALL_ENDED] Call ID:', endingCallId);
     if (state) {
       void recordCallHistory(state);
     }
-    const endingCallId = activeCallId || state?.callId;
     const from = state?.from || auth?.currentUser?.uid || firebaseUser?.uid;
     const to = state?.to || selectedPeer?._id;
     

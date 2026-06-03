@@ -1,0 +1,615 @@
+﻿diff --git a/client/src/App.jsx b/client/src/App.jsx
+index 7c2c2d6..caff3e6 100644
+--- a/client/src/App.jsx
++++ b/client/src/App.jsx
+@@ -1,4 +1,4 @@
+-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
++import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import { Download, Home, LogOut, Search, Settings, UserPlus, Users, WifiOff, X } from 'lucide-react';
+ import EmailVerificationPanel from './components/auth/EmailVerificationPanel.jsx';
+ import Avatar from './components/Avatar.jsx';
+@@ -23,7 +23,7 @@ import { error as toastError, success as toastSuccess } from './utils/toast.js';
+ import { initError } from './firebase.js';
+ import { useAuth } from './hooks/useAuth.js';
+ import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage, startSwKeepalive } from './pwa.js';
+-import { usePwaInstall } from './hooks/usePwaInstall.js';
++import { useApkDownload } from './hooks/useApkDownload.js';
+ import { useIsMobile } from './hooks/useIsMobile.js';
+ import { getCallRuntime } from './utils/callRuntime.js';
+ import { getCallMediaStream } from './utils/media.js';
+@@ -82,7 +82,6 @@ export default function App() {
+       try {
+         if (screen.orientation && typeof screen.orientation.lock === 'function') {
+           await screen.orientation.lock('portrait');
+-          console.log('[Screen Orientation] Locked to portrait at App root');
+         }
+       } catch (err) {
+         console.warn('[Screen Orientation] Lock failed or not supported at App root:', err.message);
+@@ -116,6 +115,12 @@ export default function App() {
+     };
+   }, []);
+ 
++  useEffect(() => {
++    if (!authState.loading && authState.firebaseUser && authState.profile) {
++      console.log('[STARTUP] APP_READY');
++    }
++  }, [authState.loading, authState.firebaseUser, authState.profile]);
++
+   if (authState.loading) {
+     return (
+       <>
+@@ -260,17 +265,15 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   const [connectionRequests, setConnectionRequests] = useState({ incoming: [], sent: [] });
+   const [requestsOpen, setRequestsOpen] = useState(false);
+   const {
+-    canInstall,
+-    showInstallButton,
+-    isStandalone,
+-    isIos,
+-    isDesktopChromium,
++    apkMetadata,
++    metadataError,
++    downloadProgress,
++    isDownloading,
+     showPrompt: showInstall,
+-    installInstructions,
+-    install: installApp,
++    downloadApk,
+     dismissPrompt: dismissInstallPrompt,
+-    openPrompt: openInstallPrompt
+-  } = usePwaInstall();
++    showInstallButton
++  } = useApkDownload();
+   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+   const peerConnectionRef = useRef(null);
+   const localVideoRef = useRef(null);
+@@ -300,6 +303,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   const blockStateRef = useRef(blockState);
+   const prevChatsRef = useRef([]);
+   const initialNotificationHandledRef = useRef(false);
++  const deliveredSetRef = useRef(new Set());
++  const lastSyncedProfileRef = useRef(null);
++  const answerCallRef = useRef();
++  const endCallRef = useRef();
+   chatsRef.current = chats;
+   selectedChatRef.current = activeChat;
+   callStateRef.current = callState;
+@@ -508,7 +515,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+       if (document.pictureInPictureEnabled && video && video.readyState >= 1) {
+         if (document.pictureInPictureElement !== video) {
+           await video.requestPictureInPicture();
+-          console.log('[PiP] Entered Picture-in-Picture');
+         }
+       }
+     } catch (err) {
+@@ -520,7 +526,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     try {
+       if (document.pictureInPictureElement) {
+         await document.exitPictureInPicture();
+-        console.log('[PiP] Exited Picture-in-Picture');
+       }
+     } catch (err) {
+       console.warn('[PiP] exitPictureInPicture failed:', err.message);
+@@ -566,7 +571,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     if (!video) return undefined;
+ 
+     const handleLeavePiP = () => {
+-      console.log('[PiP] leavepictureinpicture event fired, restoring call screen');
+       setCallMinimized(false);
+     };
+ 
+@@ -651,7 +655,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   const presenceRef = useRef({});
+ 
+   useEffect(() => {
+-    const uid = profile?._id || firebaseUser?.uid;
++    const uid = firebaseUser?.uid;
+     if (!uid) return undefined;
+     let unsubscribe;
+     const timer = setTimeout(() => {
+@@ -664,12 +668,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   }, [profile?._id, firebaseUser?.uid]);
+ 
+   useEffect(() => {
+-    const uid = profile?._id || firebaseUser?.uid;
++    const uid = firebaseUser?.uid;
+     if (!uid) return undefined;
+     let unsubscribe;
++    let isFirst = true;
+     const timer = setTimeout(() => {
+       unsubscribe = api.subscribeConnectionRequests(uid, (data) => {
+         setConnectionRequests(data);
++        if (isFirst) {
++          console.log('[STARTUP] CONNECTIONS_READY');
++          isFirst = false;
++        }
+       });
+     }, 2500); // Defer connection requests loading by 2.5 seconds
+     return () => {
+@@ -710,14 +719,22 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   }, []);
+ 
+   const mergePresence = (user, presence) => {
++    if (!user) return user;
+     if (isBlockedUser(user._id)) {
+       return { ...user, isOnline: false, online: false, lastSeen: null };
+     }
+-    const live = presence[user._id];
++    const live = presence ? presence[user._id] : undefined;
+     if (!live) {
+       return { ...user, isOnline: false, online: false };
+     }
+     const isOnline = Boolean(live.isOnline ?? live.online);
++    if (
++      user.isOnline === isOnline &&
++      user.online === isOnline &&
++      user.lastSeen === (live.lastSeen || user.lastSeen)
++    ) {
++      return user;
++    }
+     return {
+       ...user,
+       isOnline,
+@@ -726,16 +743,38 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     };
+   };
+ 
+-  const applyPresenceToUsers = (items, presence) => items.map((user) => mergePresence(user, presence));
++  const applyPresenceToUsers = (items, presence) => {
++    let changed = false;
++    const next = items.map((user) => {
++      const merged = mergePresence(user, presence);
++      if (merged !== user) {
++        changed = true;
++      }
++      return merged;
++    });
++    return changed ? next : items;
++  };
+ 
+-  const applyPresenceToChats = (items, presence) =>
+-    items.map((chat) => ({
+-      ...chat,
+-      participants: chat.participants.map((participant) => ({
+-        ...participant,
+-        user: mergePresence(participant.user, presence)
+-      }))
+-    }));
++  const applyPresenceToChats = (items, presence) => {
++    let changed = false;
++    const next = items.map((chat) => {
++      let participantChanged = false;
++      const nextParticipants = chat.participants.map((participant) => {
++        const mergedUser = mergePresence(participant.user, presence);
++        if (mergedUser !== participant.user) {
++          participantChanged = true;
++          return { ...participant, user: mergedUser };
++        }
++        return participant;
++      });
++      if (participantChanged) {
++        changed = true;
++        return { ...chat, participants: nextParticipants };
++      }
++      return chat;
++    });
++    return changed ? next : items;
++  };
+ 
+   useEffect(() => {
+     const presence = presenceRef.current;
+@@ -745,9 +784,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+ 
+   useEffect(() => {
+     if (!profile?._id) return undefined;
++    let isFirst = true;
+     const unsubscribeChats = subscribeChats((nextChats) => {
+       setChats(applyPresenceToChats(nextChats, presenceRef.current));
+       maybeAutoSelectChat(nextChats);
++      if (isFirst) {
++        console.log('[STARTUP] CHATS_READY');
++        isFirst = false;
++      }
+     });
+     return () => unsubscribeChats?.();
+   }, [profile?._id]);
+@@ -755,9 +799,38 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   useEffect(() => {
+     if (!profile?._id) return undefined;
+     let unsubscribePresence;
++    const prevPresenceRef = { current: {} };
+     const timer = setTimeout(() => {
+       unsubscribePresence = subscribePresence((presence) => {
+-        presenceRef.current = presence;
++        const prev = prevPresenceRef.current;
++        const relevantUids = new Set();
++        if (chatsRef.current) {
++          chatsRef.current.forEach((c) => {
++            if (c.participantIds) {
++              c.participantIds.forEach((id) => relevantUids.add(id));
++            }
++          });
++        }
++        
++        let hasRelevantChange = false;
++        for (const uid of relevantUids) {
++          const p = presence ? presence[uid] : undefined;
++          const pp = prev ? prev[uid] : undefined;
++          const pOnline = p ? Boolean(p.isOnline ?? p.online) : false;
++          const ppOnline = pp ? Boolean(pp.isOnline ?? pp.online) : false;
++          const pLastSeen = p?.lastSeen;
++          const ppLastSeen = pp?.lastSeen;
++          if (pOnline !== ppOnline || pLastSeen !== ppLastSeen) {
++            hasRelevantChange = true;
++            break;
++          }
++        }
++        
++        prevPresenceRef.current = presence || {};
++        presenceRef.current = presence || {};
++        
++        if (!hasRelevantChange) return;
++        
+         setUsers((current) => applyPresenceToUsers(current, presence));
+         setChats((current) => applyPresenceToChats(current, presence));
+       });
+@@ -769,28 +842,50 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   }, [profile?._id]);
+ 
+   useEffect(() => {
+-    if (!profile?._id || !chats || chats.length === 0) return;
+-    const uid = profile._id;
+-    chats.forEach((chat) => {
+-      const lastMsg = chat.lastMessage;
+-      if (
+-        lastMsg &&
+-        lastMsg.senderId !== uid &&
+-        !lastMsg.deletedForEveryone &&
+-        lastMsg.status !== 'failed'
+-      ) {
+-        const delivered = lastMsg.deliveredTo || [];
+-        // Mark delivered independently of seenBy ΓÇö delivery != seen
+-        if (!delivered.includes(uid)) {
+-          api.markMessageDelivered(chat._id, lastMsg._id).catch(console.error);
++    const uid = firebaseUser?.uid;
++    if (!uid || !chats || chats.length === 0) return;
++    
++    // Debounce to prevent writing on every rapid chat/presence reference change
++    const timer = setTimeout(() => {
++      chats.forEach((chat) => {
++        const lastMsg = chat.lastMessage;
++        if (
++          lastMsg &&
++          lastMsg.senderId !== uid &&
++          !lastMsg.deletedForEveryone &&
++          lastMsg.status !== 'failed'
++        ) {
++          const delivered = lastMsg.deliveredTo || [];
++          const key = `${chat._id}:${lastMsg._id}`;
++          // Mark delivered independently of seenBy ΓÇö delivery != seen
++          if (!delivered.includes(uid) && !deliveredSetRef.current.has(key)) {
++            deliveredSetRef.current.add(key);
++            api.markMessageDelivered(chat._id, lastMsg._id).catch((err) => {
++              console.error(err);
++              // Remove on failure to allow retry
++              deliveredSetRef.current.delete(key);
++            });
++          }
+         }
++      });
++      
++      // Bound the ref set size to prevent memory leak
++      if (deliveredSetRef.current.size > 500) {
++        const arr = [...deliveredSetRef.current];
++        deliveredSetRef.current = new Set(arr.slice(-200));
+       }
+-    });
++    }, 1500);
++
++    return () => clearTimeout(timer);
+   }, [chats, profile?._id]);
+ 
+   // Sync current user's profile updates into all active chats in memory and selectedChat
+   useEffect(() => {
+     if (!profile?._id) return;
++    const key = `${profile.displayName}|${profile.photoURL}|${profile.username}|${profile.bio}`;
++    if (lastSyncedProfileRef.current === key) return;
++    lastSyncedProfileRef.current = key;
++
+     setChats((currentChats) => {
+       let changed = false;
+       const nextChats = currentChats.map((chat) => {
+@@ -856,11 +951,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   useEffect(() => {
+     if (!selectedPeer?._id) return;
+ 
+-    console.log('[Realtime Sync] Subscribing to selectedPeer:', selectedPeer._id);
+     const unsubscribe = api.subscribeUser(selectedPeer._id, (updatedUser) => {
+       if (!updatedUser) return;
+ 
+-      console.log('[Realtime Sync] selectedPeer updated:', updatedUser._id, updatedUser.displayName);
++
+ 
+       // Update the user cache instantly
+       primeUserCache(updatedUser);
+@@ -929,7 +1023,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     });
+ 
+     return () => {
+-      console.log('[Realtime Sync] Unsubscribing from selectedPeer:', selectedPeer._id);
+       unsubscribe();
+     };
+   }, [selectedPeer?._id]);
+@@ -946,7 +1039,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+           audio.pause();
+           audio.src = '';
+           audio.srcObject = null;
+-          console.log('[WebRTC] Remote audio element unlocked successfully');
++
+         })
+         .catch((err) => {
+           console.warn('[WebRTC] Remote audio element unlock failed:', err.message);
+@@ -1079,6 +1172,26 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     setPanel('chats');
+   };
+ 
++  const handleChatClick = useCallback((chat) => {
++    setSelectedChat(chat);
++    const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
++    setChats((current) => {
++      let changed = false;
++      const next = current.map((item) => {
++        const itemOtherId = item.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
++        const isMatch = item._id === chat._id || (chat.type === 'direct' && item.type === 'direct' && itemOtherId === otherId);
++        if (isMatch) {
++          if (item.unreadCount !== 0) {
++            changed = true;
++            return { ...item, unreadCount: 0 };
++          }
++        }
++        return item;
++      });
++      return changed ? next : current;
++    });
++  }, [profile?._id]);
++
+   const connectWithUser = async (user) => {
+     setConnectingUserId(user._id);
+     try {
+@@ -1118,9 +1231,8 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   };
+ 
+   const handleDisconnect = async (userId) => {
+-    const currentUidStr = String(profile?._id || firebaseUser?.uid || '').trim();
++    const currentUidStr = String(firebaseUser?.uid || profile?._id || '').trim();
+     const targetPeerId = String(userId || '').trim();
+-    console.log('[Disconnect Attempt] Target Peer ID:', targetPeerId, '| Current UID:', currentUidStr);
+     try {
+       await api.disconnectUser(targetPeerId);
+       patchProfileConnections(targetPeerId, false);
+@@ -1157,10 +1269,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   };
+ 
+   const handleInstall = async () => {
+-    const choice = await installApp();
+-    if (choice?.outcome === 'accepted') {
++    const result = await downloadApk();
++    if (result?.success) {
+       const permission = await requestNotificationPermission();
+-      setNotifPermission(permission);
+       if (permission === 'granted') {
+         const token = await registerMessagingToken();
+         if (token) {
+@@ -1185,7 +1296,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+       pending: true,
+       chat: chatId,
+       sender: profile,
+-      senderId: profile._id || firebaseUser?.uid,
++      senderId: firebaseUser?.uid || profile._id,
+       type: payload.type || 'text',
+       body: payload.body || '',
+       mediaUrl: payload.mediaUrl || '',
+@@ -1486,7 +1597,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   };
+ 
+   const signalingUid = () => {
+-    const uid = auth?.currentUser?.uid || profile?._id;
++    const uid = auth?.currentUser?.uid || firebaseUser?.uid;
+     if (!uid) throw new Error('You must be signed in to place or answer a call.');
+     return uid;
+   };
+@@ -1648,7 +1759,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+           return;
+         }
+         const connection = peerConnectionsRef.current.get(remoteUid);
+-        const myUid = auth?.currentUser?.uid || profile?._id;
++        const myUid = auth?.currentUser?.uid || firebaseUser?.uid;
+ 
+         // --- Admin sync (merged from standalone useEffect) ---
+         if (room.participantsState?.[myUid]?.removed) {
+@@ -2022,7 +2133,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+       void recordCallHistory(state);
+     }
+     const endingCallId = activeCallId || state?.callId;
+-    const from = state?.from || auth?.currentUser?.uid || profile?._id;
++    const from = state?.from || auth?.currentUser?.uid || firebaseUser?.uid;
+     const to = state?.to || selectedPeer?._id;
+     
+     // Signal end to other party immediately before cleanup
+@@ -2059,6 +2170,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     }
+   };
+ 
++  answerCallRef.current = answerCall;
++  endCallRef.current = endCall;
++
+   // Handle notification message clicks dynamically while keeping existing state/call alive
+   useEffect(() => {
+     if (!('serviceWorker' in navigator)) return undefined;
+@@ -2074,9 +2188,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+           }
+         }
+         if (action === 'accept') {
+-          answerCall();
++          answerCallRef.current?.();
+         } else if (action === 'reject') {
+-          endCall();
++          endCallRef.current?.();
+         }
+       }
+     };
+@@ -2085,24 +2199,24 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+     return () => {
+       navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+     };
+-  }, [answerCall, endCall]);
++  }, []);
+ 
+   // Handle incoming call action from URL query params when app is loaded fresh
+   useEffect(() => {
+     const params = new URLSearchParams(window.location.search);
+     const action = params.get('action');
+     if (action === 'accept' && callState?.incoming && callState?.active) {
+-      answerCall();
++      answerCallRef.current?.();
+       const url = new URL(window.location);
+       url.searchParams.delete('action');
+       window.history.replaceState({}, '', url);
+     } else if (action === 'reject' && callState?.incoming && callState?.active) {
+-      endCall();
++      endCallRef.current?.();
+       const url = new URL(window.location);
+       url.searchParams.delete('action');
+       window.history.replaceState({}, '', url);
+     }
+-  }, [callState?.incoming, callState?.active, answerCall, endCall]);
++  }, [callState?.incoming, callState?.active]);
+ 
+   const handleAdminControl = async (targetUid, actionType) => {
+     if (!callState?.callId) return;
+@@ -2142,7 +2256,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+   }, [callState?.participantsState, callState?.active]);
+ 
+   useEffect(() => {
+-    const uid = auth?.currentUser?.uid || profile?._id;
++    const uid = auth?.currentUser?.uid || firebaseUser?.uid;
+     if (!uid) return undefined;
+ 
+     let cancelled = false;
+@@ -2258,13 +2372,10 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+             <div className="flex items-center gap-1">
+               {showInstallButton && (
+                 <button
+-                  onClick={() => (canInstall ? handleInstall() : openInstallPrompt())}
+-                  className={`rounded-2xl p-2.5 transition duration-200 ${
+-                    canInstall
+-                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-200/60 hover:bg-cyan-600'
+-                      : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'
+-                  }`}
+-                  title={canInstall ? 'Install AquaChat' : installInstructions}
++                  onClick={handleInstall}
++                  disabled={isDownloading}
++                  className="rounded-2xl bg-cyan-500 p-2.5 text-white shadow-md shadow-cyan-200/60 transition duration-200 hover:bg-cyan-600 disabled:opacity-75 disabled:cursor-not-allowed"
++                  title="Download AquaChat APK"
+                 >
+                   <Download size={18} />
+                 </button>
+@@ -2323,15 +2434,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+                 consolidatedChats.map((chat) => (
+                   <button 
+                     key={chat._id} 
+-                    onClick={() => {
+-                      setSelectedChat(chat);
+-                      const otherId = chat.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+-                      setChats((current) => current.map((item) => {
+-                        const itemOtherId = item.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+-                        const isMatch = item._id === chat._id || (chat.type === 'direct' && item.type === 'direct' && itemOtherId === otherId);
+-                        return isMatch ? { ...item, unreadCount: 0 } : item;
+-                      }));
+-                    }} 
++                    onClick={() => handleChatClick(chat)} 
+                     onMouseDown={() => handleChatTouchStart(chat)}
+                     onMouseUp={() => handleChatTouchEnd(chat)}
+                     onMouseLeave={() => handleChatTouchEnd(chat)}
+@@ -2474,7 +2577,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+                       setSelectedChat(null);
+                       setGroupInfoOpen(false);
+                       try {
+-                        const memberId = String(profile?._id || firebaseUser?.uid || '').trim();
++                        const memberId = String(firebaseUser?.uid || profile?._id || '').trim();
+                         await api.removeMember(id, memberId);
+                       } catch (error) {
+                         console.error('[Exit Group Error] ID:', id, '| Error:', error);
+@@ -2629,7 +2732,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+             remoteMediaEpoch={remoteMediaEpoch}
+             callTimer={callTimer}
+             remoteParticipants={remoteParticipants}
+-            currentUid={profile?._id || firebaseUser?.uid}
++            currentUid={firebaseUser?.uid || profile?._id}
+             onAdminControl={handleAdminControl}
+           />
+         </Suspense>
+@@ -2637,11 +2740,11 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+       {showInstall && (
+         <Suspense fallback={null}>
+           <InstallAppPrompt
+-            canInstall={canInstall}
+-            isIos={isIos}
+-            isDesktopChromium={isDesktopChromium}
+-            installInstructions={installInstructions}
+-            onInstall={handleInstall}
++            apkMetadata={apkMetadata}
++            metadataError={metadataError}
++            isDownloading={isDownloading}
++            downloadProgress={downloadProgress}
++            onDownload={handleInstall}
+             onClose={dismissInstallPrompt}
+           />
+         </Suspense>
+@@ -2677,7 +2780,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+                     await api.deleteGroupChat(id);
+                     toastSuccess('Group deleted successfully');
+                   } catch (error) {
+-                    console.error('[Delete Group Error] ID:', id, '| UID:', profile?._id || firebaseUser?.uid, '| Error:', error);
++                    console.error('[Delete Group Error] ID:', id, '| UID:', firebaseUser?.uid || profile?._id, '| Error:', error);
+                     const msg = error?.code === 'permission-denied'
+                       ? 'You do not have permission to delete this group. Only the group creator or admins can delete it.'
+                       : (error.message || 'Could not delete group.');
+@@ -2699,9 +2802,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+           chat={activeMenuChat}
+           amAdmin={
+             activeMenuChat?.type === 'group' && (
+-              String(activeMenuChat.createdBy || '').trim() === String(profile?._id || firebaseUser?.uid || '').trim() ||
++              String(activeMenuChat.createdBy || '').trim() === String(firebaseUser?.uid || profile?._id || '').trim() ||
+               activeMenuChat.participants?.some(
+-                (p) => String(p.user?._id || '').trim() === String(profile?._id || firebaseUser?.uid || '').trim() && p.role === 'admin'
++                (p) => String(p.user?._id || '').trim() === String(firebaseUser?.uid || profile?._id || '').trim() && p.role === 'admin'
+               )
+             )
+           }
+@@ -2719,7 +2822,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+                 await api.disconnectUser(peerId);
+                 toastSuccess('Disconnected successfully');
+               } catch (err) {
+-                console.error('[Disconnect Error] Peer ID:', peerId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
++                console.error('[Disconnect Error] Peer ID:', peerId, '| UID:', String(firebaseUser?.uid || profile?._id || '').trim(), '| Error:', err);
+                 toastError(err.message || 'Could not disconnect user');
+                 // Revert on failure
+                 refresh();
+@@ -2737,14 +2840,14 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
+               await api.deletePersonalChat(chatId);
+               toastSuccess('Chat deleted successfully');
+             } catch (err) {
+-              console.error('[Delete Chat Error] Chat ID:', chatId, '| UID:', String(profile?._id || firebaseUser?.uid || '').trim(), '| Error:', err);
++              console.error('[Delete Chat Error] Chat ID:', chatId, '| UID:', String(firebaseUser?.uid || profile?._id || '').trim(), '| Error:', err);
+               toastError(err.message || 'Could not delete chat');
+               // Revert on failure
+               refresh();
+             }
+           }}
+           onExitGroup={async (chat) => {
+-            const memberId = String(profile?._id || firebaseUser?.uid || '').trim();
++            const memberId = String(firebaseUser?.uid || profile?._id || '').trim();
+             try {
+               await api.removeMember(chat._id, memberId);
+               toastSuccess('Left group successfully');

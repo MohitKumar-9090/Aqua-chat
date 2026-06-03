@@ -110,23 +110,50 @@ const cachedUidSnapshot = () => {
 };
 
 const currentUid = () => {
-  const uid = String(auth?.currentUser?.uid || '').trim();
+  let uid = auth?.currentUser?.uid;
+  if (!uid) {
+    try {
+      const cached = localStorage.getItem('aquachat_session');
+      if (cached) {
+        const session = JSON.parse(cached);
+        if (session && session.uid && (Date.now() - (session.timestamp || 0) < 24 * 60 * 60 * 1000)) {
+          uid = session.uid;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+  if (!uid) {
+    try {
+      const cachedProfile = localStorage.getItem('aquachat_profile');
+      if (cachedProfile) {
+        const profile = JSON.parse(cachedProfile);
+        if (profile && (profile._id || profile.uid)) {
+          uid = profile._id || profile.uid;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
   if (!uid) throw new Error('You must be logged in.');
 
+  const cleanUid = String(uid).trim();
   const cached = cachedUidSnapshot();
   const hasMismatch =
-    (cached.sessionUid && cached.sessionUid !== uid) ||
-    (cached.profileUid && cached.profileUid !== uid);
+    (cached.sessionUid && cached.sessionUid !== cleanUid) ||
+    (cached.profileUid && cached.profileUid !== cleanUid);
 
   if (hasMismatch && !uidMismatchLogged) {
     uidMismatchLogged = true;
     console.warn('[Firebase UID mismatch] Using Firebase Auth UID for protected requests.', {
-      authUid: uid,
+      authUid: cleanUid,
       ...cached
     });
   }
 
-  return uid;
+  return cleanUid;
 };
 
 const requestContext = (path, extra = {}) => ({
@@ -1655,6 +1682,7 @@ export const api = {
     if (count > 0) {
       try {
         await batch.commit();
+        console.log('[MESSAGE_SEEN] Chat ID:', chatId);
       } catch (err) {
         console.error('api.seen batch commit FAILURE:', err.message || err);
         throw err;
@@ -1683,6 +1711,7 @@ export const api = {
     if (count > 0) {
       try {
         await batch.commit();
+        console.log('[MESSAGE_DELIVERED] Batch commit success for Chat ID:', chatId);
       } catch (err) {
         console.error('api.deliver batch commit FAILURE:', err.message || err);
         throw err;
@@ -1696,6 +1725,7 @@ export const api = {
     const ref = doc(firestore, 'chats', chatId, 'messages', messageId);
     try {
       await updateDoc(ref, { deliveredTo: arrayUnion(uid) });
+      console.log('[MESSAGE_DELIVERED] Chat ID:', chatId, 'Message ID:', messageId);
     } catch (err) {
       console.error('markMessageDelivered FAILURE:', {
         chatId,
