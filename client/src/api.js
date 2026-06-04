@@ -7,6 +7,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   limit,
   onSnapshot,
   orderBy,
@@ -673,6 +674,8 @@ const buildLastMessagePreview = (messageId, message, clientCreatedAt) => ({
   body: lastMessageLabel(message),
   mediaUrl: message.mediaUrl || '',
   status: 'sent',
+  deliveredTo: message.deliveredTo || [],
+  seenBy: message.seenBy || [],
   createdAt: new Date(clientCreatedAt).toISOString(),
   clientCreatedAt
 });
@@ -1471,9 +1474,19 @@ export const api = {
     // Block check is done at the UI layer (canContactUser) before calling sendMessage.
     const batch = writeBatch(firestore);
     batch.set(messageRef, message);
+
+    // Increment unread count for every participant except the sender
+    const unreadIncrements = {};
+    participantIds.forEach((pid) => {
+      if (pid !== uid) {
+        unreadIncrements[`unreadCounts.${pid}`] = increment(1);
+      }
+    });
+
     batch.update(chatRef, {
       lastMessage: preview,
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(),
+      ...unreadIncrements
     });
 
     try {
@@ -1675,17 +1688,36 @@ export const api = {
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
       if (data.senderId !== uid && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
-        batch.update(messageDoc.ref, { seenBy: arrayUnion(uid) });
+        batch.update(messageDoc.ref, {
+          seenBy: arrayUnion(uid),
+          deliveredTo: arrayUnion(uid)
+        });
         count += 1;
       }
     });
     if (count > 0) {
       try {
         await batch.commit();
+        // Reset unread count on chat document for this user
+        await updateDoc(doc(firestore, 'chats', chatId), {
+          [`unreadCounts.${uid}`]: 0
+        });
         console.log('[MESSAGE_SEEN] Chat ID:', chatId);
       } catch (err) {
         console.error('api.seen batch commit FAILURE:', err.message || err);
         throw err;
+      }
+    } else {
+      // Even if no new messages to mark, ensure stale unread count is cleared
+      try {
+        const chatSnap = await getDoc(doc(firestore, 'chats', chatId));
+        if (chatSnap.exists() && (chatSnap.data().unreadCounts?.[uid] || 0) > 0) {
+          await updateDoc(doc(firestore, 'chats', chatId), {
+            [`unreadCounts.${uid}`]: 0
+          });
+        }
+      } catch (err) {
+        console.error('api.seen unreadCounts reset FAILURE:', err.message || err);
       }
     }
     return { ok: true };
@@ -1703,7 +1735,7 @@ export const api = {
     let count = 0;
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
-      if (data.senderId !== uid && !data.deliveredTo?.includes(uid) && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
+      if (data.senderId !== uid && !data.deliveredTo?.includes(uid) && !data.deletedForEveryone) {
         batch.update(messageDoc.ref, { deliveredTo: arrayUnion(uid) });
         count += 1;
       }

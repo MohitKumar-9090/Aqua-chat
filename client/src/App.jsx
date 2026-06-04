@@ -380,8 +380,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         seen.set(key, { ...chat });
       } else {
         const existing = seen.get(key);
-        // Sum unread count
-        existing.unreadCount = (existing.unreadCount || 0) + (chat.unreadCount || 0);
+        // Take the higher count — duplicates are the same conversation,
+        // so use max instead of sum to prevent double-counting
+        existing.unreadCount = Math.max(existing.unreadCount || 0, chat.unreadCount || 0);
         
         // If duplicate has newer last message, update it
         const existingTime = existing.lastMessage?.createdAt ? new Date(existing.lastMessage.createdAt).getTime() : 0;
@@ -874,7 +875,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const arr = [...deliveredSetRef.current];
         deliveredSetRef.current = new Set(arr.slice(-200));
       }
-    }, 1500);
+    }, 300);
 
     return () => clearTimeout(timer);
   }, [chats, profile?._id]);
@@ -1142,7 +1143,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       seenTimerRef.current = setTimeout(() => {
         api.deliver(chatId).catch(console.error);
         api.seen(chatId).catch(console.error);
-      }, 600);
+      }, 150);
     });
     const unsubscribeTyping = subscribeTyping(chatId, (next) => {
       if (next?._id && isBlockedUser(next._id)) {
