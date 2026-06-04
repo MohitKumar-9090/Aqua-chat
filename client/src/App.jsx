@@ -852,7 +852,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         const lastMsg = chat.lastMessage;
         if (
           lastMsg &&
-          lastMsg.senderId !== uid &&
+          String(lastMsg.senderId || '').trim() !== String(uid || '').trim() &&
           !lastMsg.deletedForEveryone &&
           lastMsg.status !== 'failed'
         ) {

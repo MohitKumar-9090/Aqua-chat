@@ -397,7 +397,11 @@ const buildChatObject = (snap, data, userMap) => {
     }),
     createdBy: normalizedCreatedBy,
     lastMessage: data.lastMessage || null,
-    unreadCount: data.unreadCounts?.[myUid] || 0,
+    unreadCount: Math.max(
+      data.unreadCounts?.[myUid] || 0,
+      data.unreadCounts?.[myUid + ' '] || 0,
+      data.unreadCounts?.[' ' + myUid] || 0
+    ),
     updatedAt: safeIsoString(data.updatedAt) || safeIsoString(data.lastMessage?.createdAt) || safeIsoString(data.createdAt) || new Date().toISOString()
   };
 };
@@ -508,7 +512,10 @@ const mergeChatObjects = (existing, next) => {
 
 export const subscribeChats = (handler) => {
   const uid = currentUid();
-  const q = query(collection(firestore, 'chats'), where('participantIds', 'array-contains', uid));
+  const q = query(
+    collection(firestore, 'chats'),
+    where('participantIds', 'array-contains-any', [uid, uid + ' ', ' ' + uid])
+  );
   const chatCache = new Map();
   let isSubscribed = true;
 
@@ -807,7 +814,7 @@ export const subscribeMessages = (chatId, handler) => {
 };
 
 const matchesPendingMessage = (pending, server) => {
-  if (server.senderId !== pending.senderId || server.type !== pending.type) return false;
+  if (String(server.senderId || '').trim() !== String(pending.senderId || '').trim() || server.type !== pending.type) return false;
   // Widen time tolerance to 300s for slow networks / Cloudinary upload latency
   if (Math.abs((server.clientCreatedAt || 0) - (pending.clientCreatedAt || 0)) >= 300000) return false;
   if (pending.type === 'text') return (server.body || '') === (pending.body || '');
@@ -1526,7 +1533,7 @@ export const api = {
     const messageRef = doc(firestore, 'chats', chatId, 'messages', messageId);
     const snap = await getDoc(messageRef);
     if (!snap.exists()) throw new Error('Message not found.');
-    if (snap.data().senderId !== uid) throw new Error('Only the sender can delete this message for everyone.');
+    if (String(snap.data().senderId || '').trim() !== String(uid || '').trim()) throw new Error('Only the sender can delete this message for everyone.');
 
     await updateDoc(messageRef, {
       deletedForEveryone: true,
@@ -1687,7 +1694,8 @@ export const api = {
     let count = 0;
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
-      if (data.senderId !== uid && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
+      const isSender = String(data.senderId || '').trim() === String(uid || '').trim();
+      if (!isSender && !data.seenBy?.includes(uid) && !data.deletedForEveryone) {
         batch.update(messageDoc.ref, {
           seenBy: arrayUnion(uid),
           deliveredTo: arrayUnion(uid)
@@ -1698,9 +1706,11 @@ export const api = {
     if (count > 0) {
       try {
         await batch.commit();
-        // Reset unread count on chat document for this user
+        // Reset unread count on chat document for this user (with and without space padding)
         await updateDoc(doc(firestore, 'chats', chatId), {
-          [`unreadCounts.${uid}`]: 0
+          [`unreadCounts.${uid}`]: 0,
+          [`unreadCounts.${uid} `]: 0,
+          [`unreadCounts. ${uid}`]: 0
         });
         console.log('[MESSAGE_SEEN] Chat ID:', chatId);
       } catch (err) {
@@ -1711,10 +1721,20 @@ export const api = {
       // Even if no new messages to mark, ensure stale unread count is cleared
       try {
         const chatSnap = await getDoc(doc(firestore, 'chats', chatId));
-        if (chatSnap.exists() && (chatSnap.data().unreadCounts?.[uid] || 0) > 0) {
-          await updateDoc(doc(firestore, 'chats', chatId), {
-            [`unreadCounts.${uid}`]: 0
-          });
+        if (chatSnap.exists()) {
+          const chatData = chatSnap.data();
+          const hasStaleUnread = 
+            (chatData.unreadCounts?.[uid] || 0) > 0 ||
+            (chatData.unreadCounts?.[uid + ' '] || 0) > 0 ||
+            (chatData.unreadCounts?.[' ' + uid] || 0) > 0;
+          
+          if (hasStaleUnread) {
+            await updateDoc(doc(firestore, 'chats', chatId), {
+              [`unreadCounts.${uid}`]: 0,
+              [`unreadCounts.${uid} `]: 0,
+              [`unreadCounts. ${uid}`]: 0
+            });
+          }
         }
       } catch (err) {
         console.error('api.seen unreadCounts reset FAILURE:', err.message || err);
@@ -1735,7 +1755,8 @@ export const api = {
     let count = 0;
     snap.docs.forEach((messageDoc) => {
       const data = messageDoc.data();
-      if (data.senderId !== uid && !data.deliveredTo?.includes(uid) && !data.deletedForEveryone) {
+      const isSender = String(data.senderId || '').trim() === String(uid || '').trim();
+      if (!isSender && !data.deliveredTo?.includes(uid) && !data.deletedForEveryone) {
         batch.update(messageDoc.ref, { deliveredTo: arrayUnion(uid) });
         count += 1;
       }
@@ -1914,12 +1935,12 @@ export const api = {
   subscribeConnectionRequests: (uid, handler) => {
     const incomingQuery = query(
       collection(firestore, 'connectionRequests'),
-      where('receiverId', '==', uid),
+      where('receiverId', 'in', [uid, uid + ' ', ' ' + uid]),
       where('status', '==', 'pending')
     );
     const sentQuery = query(
       collection(firestore, 'connectionRequests'),
-      where('senderId', '==', uid),
+      where('senderId', 'in', [uid, uid + ' ', ' ' + uid]),
       where('status', '==', 'pending')
     );
     
