@@ -514,7 +514,7 @@ export const subscribeChats = (handler) => {
   const uid = currentUid();
   const q = query(
     collection(firestore, 'chats'),
-    where('participantIds', 'array-contains-any', [uid, uid + ' ', ' ' + uid])
+    where('participantIds', 'array-contains', uid)
   );
   const chatCache = new Map();
   let isSubscribed = true;
