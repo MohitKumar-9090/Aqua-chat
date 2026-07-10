@@ -11,8 +11,6 @@ import {
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
-  sendEmailVerification,
-  sendPasswordResetEmail,
   signOut,
   updatePassword,
   updateProfile,
@@ -96,18 +94,68 @@ export const emailSignup = async ({ email, password, displayName }) => {
 
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
   if (name) await updateProfile(credential.user, { displayName: name });
-  await sendEmailVerification(credential.user, getAuthActionSettings());
+  
+  const serverUrl = import.meta.env.VITE_SERVER_URL || '';
+  const response = await fetch(`${serverUrl}/api/auth/send-verification`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      email: email.trim(),
+      redirectUrl: window.location.origin,
+      firstName: name
+    })
+  });
+  
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to send verification email.');
+  }
+
   await signOut(auth);
   return { email: email.trim(), displayName: name };
 };
 
 export const resendVerificationEmail = async (user) => {
   if (!user) throw new Error('Sign in to resend verification email.');
-  await sendEmailVerification(user, getAuthActionSettings());
+  const serverUrl = import.meta.env.VITE_SERVER_URL || '';
+  const response = await fetch(`${serverUrl}/api/auth/send-verification`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      email: user.email,
+      redirectUrl: window.location.origin,
+      firstName: user.displayName || undefined
+    })
+  });
+  
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to send verification email.');
+  }
 };
 
-export const sendPasswordReset = (email) =>
-  sendPasswordResetEmail(auth, email.trim(), getAuthActionSettings());
+export const sendPasswordReset = async (email) => {
+  const serverUrl = import.meta.env.VITE_SERVER_URL || '';
+  const response = await fetch(`${serverUrl}/api/auth/send-password-reset`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      email: email.trim(),
+      redirectUrl: window.location.origin
+    })
+  });
+  
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to send password reset email.');
+  }
+};
 
 export const refreshAuthUser = async (user) => {
   if (!user) return null;
