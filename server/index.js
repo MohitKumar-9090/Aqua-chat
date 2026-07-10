@@ -36,7 +36,7 @@ const getFirebaseAdmin = async () => {
   if (firebaseAdmin) return firebaseAdmin;
   const admin = await import('firebase-admin');
   if (!admin.default.apps.length) {
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim().replace(/^['"]|['"]$/g, '');
     if (serviceAccountJson) {
       try {
         const serviceAccount = JSON.parse(serviceAccountJson);
@@ -49,9 +49,12 @@ const getFirebaseAdmin = async () => {
         throw err;
       }
     } else {
-      const projectId = process.env.FIREBASE_PROJECT_ID;
-      const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-      const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+      const projectId = process.env.FIREBASE_PROJECT_ID?.trim().replace(/^['"]|['"]$/g, '');
+      const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim().replace(/^['"]|['"]$/g, '');
+      let privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim().replace(/^['"]|['"]$/g, '');
+      if (privateKey) {
+        privateKey = privateKey.replace(/\\n/g, '\n');
+      }
 
       if (projectId && clientEmail && privateKey) {
         admin.default.initializeApp({
@@ -121,8 +124,11 @@ app.post('/api/auth/send-verification', async (req, res) => {
     }
 
     // 2. Generate Firebase Auth verification action link
-    const defaultUrl = `https://${process.env.FIREBASE_PROJECT_ID || 'you-me-96515'}.firebaseapp.com`;
-    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || defaultUrl;
+    const projectIdClean = process.env.FIREBASE_PROJECT_ID?.trim().replace(/^['"]|['"]$/g, '') || 'you-me-96515';
+    const defaultUrl = `https://${projectIdClean}.firebaseapp.com`;
+    const clientUrlClean = process.env.CLIENT_URL?.trim().replace(/^['"]|['"]$/g, '');
+    const frontendUrlClean = process.env.FRONTEND_URL?.trim().replace(/^['"]|['"]$/g, '');
+    const frontendUrl = frontendUrlClean || clientUrlClean || defaultUrl;
     const actionSettings = {
       url: redirectUrl || frontendUrl,
       handleCodeInApp: true
@@ -168,45 +174,68 @@ app.post('/api/auth/send-verification', async (req, res) => {
  * Body: { email: string, redirectUrl?: string, firstName?: string }
  */
 app.post('/api/auth/send-password-reset', async (req, res) => {
-  const { email, redirectUrl, firstName } = req.body;
-
-  if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    return res.status(400).json({ success: false, error: 'Please enter a valid email address.', code: 'auth/invalid-email' });
-  }
+  console.log('[Auth] /api/auth/send-password-reset endpoint triggered.');
+  console.log('[Auth] Request Body:', JSON.stringify(req.body, null, 2));
 
   try {
+    const { email, redirectUrl, firstName } = req.body;
+
+    if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      console.warn('[Auth] Invalid email format:', email);
+      return res.status(400).json({ success: false, error: 'Please enter a valid email address.', code: 'auth/invalid-email' });
+    }
+
+    const cleanedEmail = email.trim().replace(/^['"]|['"]$/g, '');
+    const cleanedRedirectUrl = redirectUrl ? redirectUrl.trim().replace(/^['"]|['"]$/g, '') : null;
+
     const admin = await getFirebaseAdmin();
 
     // 1. Verify user exists in Firebase Auth
     let userRecord;
     try {
-      userRecord = await admin.auth().getUserByEmail(email.trim());
+      console.log(`[Auth] Looking up user record for email: ${cleanedEmail}`);
+      userRecord = await admin.auth().getUserByEmail(cleanedEmail);
+      console.log(`[Auth] User record retrieved. UID: ${userRecord.uid}`);
     } catch (err) {
-      if (err.code === 'auth/user-not-found') {
-        return res.status(404).json({ success: false, error: 'No user registered with this email address.', code: 'auth/user-not-found' });
-      }
       console.error('[Auth] Error getting user by email:', err);
-      return res.status(500).json({ success: false, error: err.message || 'Error checking user registration.', code: err.code || 'auth/internal-error' });
+      console.error('Error Code:', err.code);
+      console.error('Error Message:', err.message);
+      console.error('Error Stack:', err.stack);
+      if (err.code === 'auth/user-not-found') {
+        return res.status(404).json({ success: false, error: 'No user registered with this email address.', code: 'auth/user-not-found', errorDetails: err.message });
+      }
+      return res.status(500).json({ success: false, error: `Error checking user registration: ${err.message}`, code: err.code || 'auth/internal-error', stack: err.stack });
     }
 
     // 2. Generate Firebase Auth password reset action link
-    const defaultUrl = `https://${process.env.FIREBASE_PROJECT_ID || 'you-me-96515'}.firebaseapp.com`;
-    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || defaultUrl;
+    const projectIdClean = process.env.FIREBASE_PROJECT_ID?.trim().replace(/^['"]|['"]$/g, '') || 'you-me-96515';
+    const defaultUrl = `https://${projectIdClean}.firebaseapp.com`;
+    const clientUrlClean = process.env.CLIENT_URL?.trim().replace(/^['"]|['"]$/g, '');
+    const frontendUrlClean = process.env.FRONTEND_URL?.trim().replace(/^['"]|['"]$/g, '');
+    const frontendUrl = frontendUrlClean || clientUrlClean || defaultUrl;
+    
     const actionSettings = {
-      url: redirectUrl || frontendUrl,
+      url: cleanedRedirectUrl || frontendUrl,
       handleCodeInApp: true
     };
 
+    console.log('[Auth] Action Link Settings:', JSON.stringify(actionSettings, null, 2));
+
     let resetLink;
     try {
-      resetLink = await admin.auth().generatePasswordResetLink(email.trim(), actionSettings);
+      console.log('[Auth] Generating password reset link...');
+      resetLink = await admin.auth().generatePasswordResetLink(cleanedEmail, actionSettings);
+      console.log('[Auth] Password reset link generated successfully.');
     } catch (err) {
       console.error('[Auth] Error generating password reset link:', err);
-      return res.status(500).json({ success: false, error: `Firebase Admin failed to generate password reset link: ${err.message}`, code: err.code || 'auth/link-generation-failed' });
+      console.error('Error Code:', err.code);
+      console.error('Error Message:', err.message);
+      console.error('Error Stack:', err.stack);
+      return res.status(500).json({ success: false, error: `Firebase Admin failed to generate password reset link: ${err.message}`, code: err.code || 'auth/link-generation-failed', stack: err.stack });
     }
 
     // 3. Extract/format first name
-    let parsedFirstName = firstName?.trim();
+    let parsedFirstName = firstName?.trim().replace(/^['"]|['"]$/g, '');
     if (!parsedFirstName && userRecord.displayName) {
       parsedFirstName = userRecord.displayName.trim().split(' ')[0];
     }
@@ -216,19 +245,24 @@ app.post('/api/auth/send-password-reset', async (req, res) => {
 
     // 4. Send email using Resend
     try {
-      await emailService.sendPasswordResetEmail(email.trim(), resetLink, parsedFirstName);
+      console.log('[Auth] Dispatching password reset email to EmailService...');
+      await emailService.sendPasswordResetEmail(cleanedEmail, resetLink, parsedFirstName);
+      console.log('[Auth] Password reset email dispatched successfully.');
     } catch (err) {
       console.error('[Auth] Resend service failed to deliver email:', err);
-      return res.status(500).json({ success: false, error: `Email delivery failed: ${err.message}`, code: 'auth/email-delivery-failed' });
+      console.error('Error Code:', err.code);
+      console.error('Error Message:', err.message);
+      console.error('Error Stack:', err.stack);
+      return res.status(500).json({ success: false, error: `Email delivery failed: ${err.message}`, code: 'auth/email-delivery-failed', stack: err.stack });
     }
 
     res.json({ success: true, ok: true, message: 'Password reset email sent successfully.' });
   } catch (err) {
-    console.error('[Auth] Unexpected error in send-password-reset:', err);
+    console.error('[Auth] Unexpected critical error in send-password-reset route:', err);
     console.error('Error Code:', err.code);
     console.error('Error Message:', err.message);
     console.error('Error Stack:', err.stack);
-    res.status(500).json({ success: false, error: err.message || 'Could not send password reset email.', code: err.code || 'auth/internal-error' });
+    res.status(500).json({ success: false, error: err.message || 'An unexpected error occurred.', code: err.code || 'auth/internal-error', stack: err.stack });
   }
 });
 

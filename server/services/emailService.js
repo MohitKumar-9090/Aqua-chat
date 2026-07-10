@@ -2,8 +2,8 @@ import { Resend } from 'resend';
 
 class EmailService {
   constructor() {
-    this.apiKey = process.env.RESEND_API_KEY;
-    this.fromEmail = process.env.RESEND_FROM_EMAIL || 'AquaChat <onboarding@resend.dev>';
+    this.apiKey = process.env.RESEND_API_KEY?.trim().replace(/^['"]|['"]$/g, '');
+    this.fromEmail = process.env.RESEND_FROM_EMAIL?.trim().replace(/^['"]|['"]$/g, '') || 'AquaChat <onboarding@resend.dev>';
     
     if (this.apiKey) {
       this.resend = new Resend(this.apiKey);
