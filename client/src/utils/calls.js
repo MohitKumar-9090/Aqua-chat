@@ -345,8 +345,20 @@ export const pushIceCandidate = async (callId, uid, candidate) => {
   const path = `calls/${callId}/candidates/${writerUid}`;
   const candidateRef = push(dbRef(realtimeDb, path));
   try {
-    logRtdb('set', `${path}/${candidateRef.key}`);
-    await set(candidateRef, JSON.parse(JSON.stringify(candidate)));
+    const candidateObj = typeof candidate.toJSON === 'function'
+      ? candidate.toJSON()
+      : {
+          candidate: candidate.candidate,
+          sdpMid: candidate.sdpMid,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+          usernameFragment: candidate.usernameFragment
+        };
+    const sdpMLineIndex = candidateObj.sdpMLineIndex !== undefined ? candidateObj.sdpMLineIndex : candidateObj.sdpMlineIndex;
+    if (sdpMLineIndex !== undefined) {
+      candidateObj.sdpMLineIndex = sdpMLineIndex;
+      candidateObj.sdpMlineIndex = sdpMLineIndex;
+    }
+    await set(candidateRef, candidateObj);
   } catch (error) {
     logRtdbError('pushIceCandidate', path, error);
     throw toCallError(error, 'Could not send connection details for the call.', path);
@@ -362,10 +374,16 @@ export const subscribeIceCandidates = (callId, uid, handler) => {
       const value = snap.val() || {};
       Object.values(value).forEach((candidate) => {
         if (!candidate?.candidate) return;
-        const key = `${candidate.sdpMid || ''}:${candidate.sdpMLineIndex || 0}:${candidate.candidate}`;
+        const sdpMLineIndex = candidate.sdpMLineIndex !== undefined ? candidate.sdpMLineIndex : candidate.sdpMlineIndex;
+        const normalizedCandidate = {
+          ...candidate,
+          sdpMLineIndex,
+          sdpMlineIndex: sdpMLineIndex
+        };
+        const key = `${normalizedCandidate.sdpMid || ''}:${normalizedCandidate.sdpMLineIndex || 0}:${normalizedCandidate.candidate}`;
         if (seen.has(key)) return;
         seen.add(key);
-        handler(candidate);
+        handler(normalizedCandidate);
       });
     },
     (error) => logRtdbError('onValue', path, error)

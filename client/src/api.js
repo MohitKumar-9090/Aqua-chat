@@ -648,7 +648,13 @@ const mapMessageDoc = (messageSnap, chatId) => {
     fileSize: data.fileSize || 0,
     mimeType: data.mimeType || '',
     duration: data.duration || 0,
-    replyTo: data.replyTo || null,
+    replyTo: data.replyTo || (data.replyToId ? {
+      messageId: data.replyToId,
+      senderId: '',
+      senderName: data.replyToName || '',
+      type: data.replyToType || 'text',
+      body: data.replyToBody || ''
+    } : null),
     deletedFor: data.deletedFor || [],
     deletedForEveryone: Boolean(data.deletedForEveryone),
     deletedAt: safeIsoString(data.deletedAt) || null,
@@ -677,6 +683,7 @@ const buildLastMessagePreview = (messageId, message, clientCreatedAt) => ({
   chat: message.chat,
   sender: message.sender,
   senderId: message.senderId,
+  senderName: message.senderName || message.sender?.displayName || message.sender?.name || 'AquaChat user',
   type: message.type,
   body: lastMessageLabel(message),
   mediaUrl: message.mediaUrl || '',
@@ -1453,10 +1460,16 @@ export const api = {
     const messageRef = doc(collection(firestore, 'chats', chatId, 'messages'));
     const sender = senderInput || (await readUserCached(uid));
     const clientCreatedAt = Date.now();
+    const replyToId = payload.replyTo ? (payload.replyTo.messageId || payload.replyTo._id || payload.replyTo.id) : null;
+    const replyToBody = payload.replyTo ? (payload.replyTo.body || '') : null;
+    const replyToName = payload.replyTo ? (payload.replyTo.senderName || payload.replyTo.sender?.displayName || '') : null;
+    const replyToType = payload.replyTo ? (payload.replyTo.type || 'text') : null;
+
     const message = {
       chat: chatId,
       sender,
       senderId: uid,
+      senderName: sender.displayName || sender.name || 'AquaChat user',
       type: payload.type || 'text',
       body: payload.body || '',
       mediaUrl: payload.mediaUrl || '',
@@ -1466,6 +1479,10 @@ export const api = {
       mimeType: payload.mimeType || '',
       duration: payload.duration || 0,
       replyTo: payload.replyTo || null,
+      replyToId,
+      replyToBody,
+      replyToName,
+      replyToType,
       deletedFor: [],
       deletedForEveryone: false,
       status: 'sent',
@@ -1707,10 +1724,13 @@ export const api = {
       try {
         await batch.commit();
         // Reset unread count on chat document for this user (with and without space padding)
+        const readCutoff = serverTimestamp();
         await updateDoc(doc(firestore, 'chats', chatId), {
           [`unreadCounts.${uid}`]: 0,
           [`unreadCounts.${uid} `]: 0,
-          [`unreadCounts. ${uid}`]: 0
+          [`unreadCounts. ${uid}`]: 0,
+          [`lastReadAt.${uid}`]: readCutoff,
+          [`readState.${uid}`]: { lastReadAt: readCutoff }
         });
         console.log('[MESSAGE_SEEN] Chat ID:', chatId);
       } catch (err) {
@@ -1729,10 +1749,13 @@ export const api = {
             (chatData.unreadCounts?.[' ' + uid] || 0) > 0;
           
           if (hasStaleUnread) {
+            const readCutoff = serverTimestamp();
             await updateDoc(doc(firestore, 'chats', chatId), {
               [`unreadCounts.${uid}`]: 0,
               [`unreadCounts.${uid} `]: 0,
-              [`unreadCounts. ${uid}`]: 0
+              [`unreadCounts. ${uid}`]: 0,
+              [`lastReadAt.${uid}`]: readCutoff,
+              [`readState.${uid}`]: { lastReadAt: readCutoff }
             });
           }
         }

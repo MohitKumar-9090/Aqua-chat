@@ -3,6 +3,7 @@ dotenv.config();
 import express from 'express';
 import cors from 'cors';
 import { v2 as cloudinary } from 'cloudinary';
+import emailService from './services/emailService.js';
 
 const app = express();
 
@@ -76,6 +77,113 @@ const verifyAuth = async (req, res, next) => {
 app.get('/', (req, res) => {
   res.send('AquaChat Firebase Backend Running');
 });
+
+/**
+ * POST /api/auth/send-verification
+ * Body: { email: string, redirectUrl?: string, firstName?: string }
+ */
+app.post('/api/auth/send-verification', async (req, res) => {
+  const { email, redirectUrl, firstName } = req.body;
+
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid email.' });
+  }
+
+  try {
+    const admin = await getFirebaseAdmin();
+    
+    // 1. Verify user exists in Firebase Auth
+    let userRecord;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email.trim());
+    } catch (err) {
+      if (err.code === 'auth/user-not-found') {
+        return res.status(404).json({ error: 'No user registered with this email address.' });
+      }
+      throw err;
+    }
+
+    // 2. Generate Firebase Auth verification action link
+    const defaultUrl = `https://${process.env.FIREBASE_PROJECT_ID || 'you-me-96515'}.firebaseapp.com`;
+    const actionSettings = {
+      url: redirectUrl || process.env.CLIENT_URL || defaultUrl,
+      handleCodeInApp: true
+    };
+    
+    const verificationLink = await admin.auth().generateEmailVerificationLink(email.trim(), actionSettings);
+
+    // 3. Extract/format first name
+    let parsedFirstName = firstName?.trim();
+    if (!parsedFirstName && userRecord.displayName) {
+      parsedFirstName = userRecord.displayName.trim().split(' ')[0];
+    }
+    if (!parsedFirstName) {
+      parsedFirstName = 'there';
+    }
+
+    // 4. Send email using Resend
+    await emailService.sendVerificationEmail(email.trim(), verificationLink, parsedFirstName);
+
+    res.json({ ok: true, message: 'Verification email sent successfully.' });
+  } catch (err) {
+    console.error('[Auth] Failed to generate/send email verification link:', err.message);
+    res.status(500).json({ error: 'Could not send verification email.' });
+  }
+});
+
+/**
+ * POST /api/auth/send-password-reset
+ * Body: { email: string, redirectUrl?: string, firstName?: string }
+ */
+app.post('/api/auth/send-password-reset', async (req, res) => {
+  const { email, redirectUrl, firstName } = req.body;
+
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid email.' });
+  }
+
+  try {
+    const admin = await getFirebaseAdmin();
+
+    // 1. Verify user exists in Firebase Auth
+    let userRecord;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email.trim());
+    } catch (err) {
+      if (err.code === 'auth/user-not-found') {
+        return res.status(404).json({ error: 'No user registered with this email address.' });
+      }
+      throw err;
+    }
+
+    // 2. Generate Firebase Auth password reset action link
+    const defaultUrl = `https://${process.env.FIREBASE_PROJECT_ID || 'you-me-96515'}.firebaseapp.com`;
+    const actionSettings = {
+      url: redirectUrl || process.env.CLIENT_URL || defaultUrl,
+      handleCodeInApp: true
+    };
+
+    const resetLink = await admin.auth().generatePasswordResetLink(email.trim(), actionSettings);
+
+    // 3. Extract/format first name
+    let parsedFirstName = firstName?.trim();
+    if (!parsedFirstName && userRecord.displayName) {
+      parsedFirstName = userRecord.displayName.trim().split(' ')[0];
+    }
+    if (!parsedFirstName) {
+      parsedFirstName = 'there';
+    }
+
+    // 4. Send email using Resend
+    await emailService.sendPasswordResetEmail(email.trim(), resetLink, parsedFirstName);
+
+    res.json({ ok: true, message: 'Password reset email sent successfully.' });
+  } catch (err) {
+    console.error('[Auth] Failed to generate/send password reset link:', err.message);
+    res.status(500).json({ error: 'Could not send password reset email.' });
+  }
+});
+
 
 /**
  * POST /api/cloudinary/delete
