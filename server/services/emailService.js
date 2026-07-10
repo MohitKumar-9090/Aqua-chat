@@ -3,13 +3,32 @@ import { Resend } from 'resend';
 class EmailService {
   constructor() {
     this.apiKey = process.env.RESEND_API_KEY?.trim().replace(/^['"]|['"]$/g, '');
-    this.fromEmail = process.env.RESEND_FROM_EMAIL?.trim().replace(/^['"]|['"]$/g, '') || 'AquaChat <noreply@aquachat.in>';
-    
+
+    // Resolve sender address: env override → hardcoded verified domain
+    const envFrom = process.env.RESEND_FROM_EMAIL?.trim().replace(/^['"]|['"]$/g, '');
+    const VERIFIED_SENDER = 'AquaChat <noreply@aquachat.in>';
+
+    if (envFrom && !envFrom.includes('resend.dev')) {
+      this.fromEmail = envFrom;
+    } else {
+      if (envFrom?.includes('resend.dev')) {
+        console.warn('[EmailService] RESEND_FROM_EMAIL contains "resend.dev" (sandbox). Ignoring and using verified domain.');
+      }
+      this.fromEmail = VERIFIED_SENDER;
+    }
+
+    // ── Diagnostic logging ──────────────────────────────────────────
+    console.log('[EmailService] ── Email Configuration ──');
+    console.log(`[EmailService]   FROM address : ${this.fromEmail}`);
+    console.log(`[EmailService]   API key set  : ${this.apiKey ? 'YES (' + this.apiKey.slice(0, 8) + '...)' : 'NO — emails will FAIL'}`);
+    console.log(`[EmailService]   ENV RESEND_FROM_EMAIL raw value: "${process.env.RESEND_FROM_EMAIL ?? '(undefined)'}"`);
+    console.log('[EmailService] ────────────────────────');
+
     if (this.apiKey) {
       this.resend = new Resend(this.apiKey);
-      console.log('[EmailService] Resend service initialized successfully.');
+      console.log('[EmailService] Resend SDK initialized successfully.');
     } else {
-      console.warn('[EmailService] RESEND_API_KEY environment variable is not defined. Email sending will run in SIMULATION mode.');
+      console.error('[EmailService] RESEND_API_KEY is NOT defined. All email sends will fail.');
       this.resend = null;
     }
   }
@@ -30,13 +49,23 @@ class EmailService {
     }
 
     try {
-      console.log(`[EmailService] Sending verification email to ${email} via Resend...`);
-      const response = await this.resend.emails.send({
+      // ── RUNTIME AUDIT: Log the EXACT payload going to Resend ──────
+      const emailPayload = {
         from: this.fromEmail,
         to: email,
         subject: subject,
         html: htmlContent,
-      });
+      };
+      console.log('[EmailService] ══════════ RUNTIME AUDIT (Verification) ══════════');
+      console.log(`[EmailService]   from    : "${emailPayload.from}"`);
+      console.log(`[EmailService]   to      : "${emailPayload.to}"`);
+      console.log(`[EmailService]   subject : "${emailPayload.subject}"`);
+      console.log(`[EmailService]   API key : "${this.apiKey ? this.apiKey.slice(0, 8) + '...' : '(UNDEFINED)'}"`);
+      console.log(`[EmailService]   this.fromEmail : "${this.fromEmail}"`);
+      console.log('[EmailService] ════════════════════════════════════════════════════');
+
+      console.log(`[EmailService] Sending verification email to ${email} via Resend...`);
+      const response = await this.resend.emails.send(emailPayload);
 
       console.log('[EmailService] Resend API Raw Response:', JSON.stringify(response, null, 2));
 
@@ -69,13 +98,25 @@ class EmailService {
     }
 
     try {
-      console.log(`[EmailService] Sending password reset email to ${email} via Resend...`);
-      const response = await this.resend.emails.send({
+      // ── RUNTIME AUDIT: Log the EXACT payload going to Resend ──────
+      const emailPayload = {
         from: this.fromEmail,
         to: email,
         subject: subject,
         html: htmlContent,
-      });
+      };
+      console.log('[EmailService] ══════════ RUNTIME AUDIT ══════════');
+      console.log(`[EmailService]   from    : "${emailPayload.from}"`);
+      console.log(`[EmailService]   to      : "${emailPayload.to}"`);
+      console.log(`[EmailService]   subject : "${emailPayload.subject}"`);
+      console.log(`[EmailService]   API key : "${this.apiKey ? this.apiKey.slice(0, 8) + '...' : '(UNDEFINED)'}"`);
+      console.log(`[EmailService]   this.fromEmail : "${this.fromEmail}"`);
+      console.log(`[EmailService]   process.env.RESEND_FROM_EMAIL : "${process.env.RESEND_FROM_EMAIL ?? '(undefined)'}"`);
+      console.log(`[EmailService]   process.env.RESEND_API_KEY    : "${process.env.RESEND_API_KEY ? process.env.RESEND_API_KEY.slice(0, 8) + '...' : '(undefined)'}"`);
+      console.log('[EmailService] ══════════════════════════════════');
+
+      console.log(`[EmailService] Sending password reset email to ${email} via Resend...`);
+      const response = await this.resend.emails.send(emailPayload);
 
       console.log('[EmailService] Resend API Raw Response:', JSON.stringify(response, null, 2));
 

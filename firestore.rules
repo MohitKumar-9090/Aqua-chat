@@ -9,10 +9,7 @@ service cloud.firestore {
     function isParticipant(chatId) {
       return signedIn() &&
         (
-          request.auth.uid.trim() in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds ||
-          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds ||
-          (request.auth.uid + ' ') in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds ||
-          (' ' + request.auth.uid) in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds
         );
     }
 
@@ -25,56 +22,39 @@ service cloud.firestore {
     }
 
     function canChangeConnectionList(userId) {
-      return (request.auth.uid.trim() != userId.trim()) &&
+      return (request.auth.uid != userId) &&
         onlyConnectionsChanged() &&
         (
-          request.auth.uid.trim() in connectionsOf(resource.data) ||
           request.auth.uid in connectionsOf(resource.data) ||
-          (request.auth.uid + ' ') in connectionsOf(resource.data) ||
-          (' ' + request.auth.uid) in connectionsOf(resource.data) ||
-          request.auth.uid.trim() in connectionsOf(request.resource.data) ||
-          request.auth.uid in connectionsOf(request.resource.data) ||
-          (request.auth.uid + ' ') in connectionsOf(request.resource.data) ||
-          (' ' + request.auth.uid) in connectionsOf(request.resource.data)
+          request.auth.uid in connectionsOf(request.resource.data)
         );
     }
 
     match /users/{userId} {
       allow read: if signedIn();
-      allow create: if signedIn() && (
-        request.auth.uid == userId ||
-        request.auth.uid.trim() == userId.trim()
-      );
+      allow create: if signedIn() && request.auth.uid == userId;
       allow update: if signedIn() && (
         request.auth.uid == userId ||
-        request.auth.uid.trim() == userId.trim() ||
         canChangeConnectionList(userId)
       );
 
       match /blocked/{blockedUid} {
         allow read: if signedIn() && (
           request.auth.uid == userId ||
-          request.auth.uid.trim() == userId.trim() ||
-          request.auth.uid == blockedUid ||
-          request.auth.uid.trim() == String(blockedUid).trim()
+          request.auth.uid == blockedUid
         );
-        allow write: if signedIn() && (
-          request.auth.uid == userId ||
-          request.auth.uid.trim() == userId.trim()
-        );
+        allow write: if signedIn() && request.auth.uid == userId;
       }
 
       match /blockedBy/{blockerId} {
         allow read: if signedIn() && (
           request.auth.uid == userId ||
-          request.auth.uid.trim() == userId.trim() ||
-          request.auth.uid == blockerId ||
-          request.auth.uid.trim() == String(blockerId).trim()
+          request.auth.uid == blockerId
         );
         allow create: if signedIn() &&
-          (request.auth.uid == blockerId || request.auth.uid.trim() == String(blockerId).trim()) &&
-          (request.resource.data.blockerId == request.auth.uid || request.resource.data.blockerId == request.auth.uid.trim());
-        allow delete: if signedIn() && (request.auth.uid == blockerId || request.auth.uid.trim() == String(blockerId).trim());
+          request.auth.uid == blockerId &&
+          request.resource.data.blockerId == request.auth.uid;
+        allow delete: if signedIn() && request.auth.uid == blockerId;
         allow update: if false;
       }
     }
@@ -82,37 +62,22 @@ service cloud.firestore {
     match /connectionRequests/{requestId} {
       allow read: if signedIn() && (
         resource.data.senderId == request.auth.uid ||
-        (resource.data.senderId is string && resource.data.senderId.trim() == request.auth.uid.trim()) ||
-        resource.data.receiverId == request.auth.uid ||
-        (resource.data.receiverId is string && resource.data.receiverId.trim() == request.auth.uid.trim())
+        resource.data.receiverId == request.auth.uid
       );
       allow create: if signedIn() &&
-        (
-          requestId == request.auth.uid + '_' + request.resource.data.receiverId ||
-          requestId == request.auth.uid.trim() + '_' + request.resource.data.receiverId.trim()
-        ) &&
-        (
-          request.resource.data.senderId == request.auth.uid ||
-          (request.resource.data.senderId is string && request.resource.data.senderId.trim() == request.auth.uid.trim())
-        ) &&
+        requestId == request.auth.uid + '_' + request.resource.data.receiverId &&
+        request.resource.data.senderId == request.auth.uid &&
         request.resource.data.receiverId != request.auth.uid &&
-        (request.resource.data.receiverId is string && request.resource.data.receiverId.trim() != request.auth.uid.trim()) &&
         request.resource.data.status == 'pending';
       allow update: if signedIn() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'createdAt']) &&
         (
           (
-            (
-              resource.data.receiverId == request.auth.uid ||
-              (resource.data.receiverId is string && resource.data.receiverId.trim() == request.auth.uid.trim())
-            ) &&
+            resource.data.receiverId == request.auth.uid &&
             request.resource.data.status in ['accepted', 'rejected']
           ) ||
           (
-            (
-              resource.data.senderId == request.auth.uid ||
-              (resource.data.senderId is string && resource.data.senderId.trim() == request.auth.uid.trim())
-            ) &&
+            resource.data.senderId == request.auth.uid &&
             request.resource.data.senderId == resource.data.senderId &&
             request.resource.data.receiverId == resource.data.receiverId &&
             request.resource.data.status == 'pending'
@@ -122,54 +87,22 @@ service cloud.firestore {
     }
 
     match /chats/{chatId} {
-      allow read: if signedIn() && (
-        request.auth.uid.trim() in resource.data.participantIds ||
-        request.auth.uid in resource.data.participantIds ||
-        (request.auth.uid + ' ') in resource.data.participantIds ||
-        (' ' + request.auth.uid) in resource.data.participantIds
-      );
-      allow create: if signedIn() && (
-        request.auth.uid.trim() in request.resource.data.participantIds ||
-        request.auth.uid in request.resource.data.participantIds ||
-        (request.auth.uid + ' ') in request.resource.data.participantIds ||
-        (' ' + request.auth.uid) in request.resource.data.participantIds
-      );
-      allow update: if signedIn() && (
-        request.auth.uid.trim() in resource.data.participantIds ||
-        request.auth.uid in resource.data.participantIds ||
-        (request.auth.uid + ' ') in resource.data.participantIds ||
-        (' ' + request.auth.uid) in resource.data.participantIds
-      );
-      allow delete: if signedIn() && (
-        request.auth.uid.trim() in resource.data.participantIds ||
-        request.auth.uid in resource.data.participantIds ||
-        (request.auth.uid + ' ') in resource.data.participantIds ||
-        (' ' + request.auth.uid) in resource.data.participantIds
-      ) && (
-        resource.data.type == 'direct' ||
-        ('createdBy' in resource.data && (
-          resource.data.createdBy == request.auth.uid ||
-          resource.data.createdBy == request.auth.uid + ' ' ||
-          resource.data.createdBy == ' ' + request.auth.uid ||
-          (resource.data.createdBy is string && resource.data.createdBy.trim() == request.auth.uid.trim())
-        )) ||
-        ('adminIds' in resource.data && (
-          request.auth.uid.trim() in resource.data.adminIds ||
-          request.auth.uid in resource.data.adminIds ||
-          (request.auth.uid + ' ') in resource.data.adminIds ||
-          (' ' + request.auth.uid) in resource.data.adminIds
-        ))
-      );
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if signedIn() && request.auth.uid in request.resource.data.participantIds;
+      allow update: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow delete: if signedIn() &&
+        request.auth.uid in resource.data.participantIds &&
+        (
+          resource.data.type == 'direct' ||
+          ('createdBy' in resource.data && resource.data.createdBy == request.auth.uid) ||
+          ('adminIds' in resource.data && request.auth.uid in resource.data.adminIds)
+        );
 
       match /messages/{messageId} {
         allow read: if isParticipant(chatId);
-        allow create: if isParticipant(chatId) && (
-          request.resource.data.senderId == request.auth.uid ||
-          (request.resource.data.senderId is string && request.resource.data.senderId.trim() == request.auth.uid.trim())
-        );
+        allow create: if isParticipant(chatId) && request.resource.data.senderId == request.auth.uid;
         allow update: if signedIn() && (
           request.auth.uid == resource.data.senderId ||
-          request.auth.uid.trim() == String(resource.data.senderId).trim() ||
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy', 'deliveredTo', 'deletedFor'])
         );
         allow delete: if signedIn();
@@ -179,8 +112,8 @@ service cloud.firestore {
     match /statuses/{statusId} {
       allow read: if signedIn();
       allow create: if signedIn() &&
-        (request.resource.data.userId == request.auth.uid || request.resource.data.userId.trim() == request.auth.uid.trim()) &&
-        (!('ownerId' in request.resource.data) || request.resource.data.ownerId == request.auth.uid || request.resource.data.ownerId.trim() == request.auth.uid.trim()) &&
+        request.resource.data.userId == request.auth.uid &&
+        (!('ownerId' in request.resource.data) || request.resource.data.ownerId == request.auth.uid) &&
         request.resource.data.expiresAt is timestamp;
       allow update: if signedIn() &&
         (
@@ -189,21 +122,13 @@ service cloud.firestore {
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['visibility', 'selectedViewerIds']) &&
             (
               resource.data.userId == request.auth.uid ||
-              (resource.data.userId is string && resource.data.userId.trim() == request.auth.uid.trim()) ||
-              ('ownerId' in resource.data && (
-                resource.data.ownerId == request.auth.uid ||
-                (resource.data.ownerId is string && resource.data.ownerId.trim() == request.auth.uid.trim())
-              ))
+              ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
             )
           )
         );
       allow delete: if signedIn() && (
         resource.data.userId == request.auth.uid ||
-        (resource.data.userId is string && resource.data.userId.trim() == request.auth.uid.trim()) ||
-        ('ownerId' in resource.data && (
-          resource.data.ownerId == request.auth.uid ||
-          (resource.data.ownerId is string && resource.data.ownerId.trim() == request.auth.uid.trim())
-        ))
+        ('ownerId' in resource.data && resource.data.ownerId == request.auth.uid)
       );
     }
   }
