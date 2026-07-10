@@ -34,6 +34,7 @@ class EmailService {
     }
 
     try {
+      console.log(`[EmailService] Sending verification email to ${email} via Resend...`);
       const response = await this.resend.emails.send({
         from: this.fromEmail,
         to: email,
@@ -41,7 +42,10 @@ class EmailService {
         html: htmlContent,
       });
 
+      console.log('[EmailService] Resend API Raw Response:', JSON.stringify(response, null, 2));
+
       if (response.error) {
+        console.error(`[EmailService] Resend returned an error when sending verification to ${email}:`, response.error);
         throw new Error(response.error.message || JSON.stringify(response.error));
       }
 
@@ -73,6 +77,7 @@ class EmailService {
     }
 
     try {
+      console.log(`[EmailService] Sending password reset email to ${email} via Resend...`);
       const response = await this.resend.emails.send({
         from: this.fromEmail,
         to: email,
@@ -80,7 +85,10 @@ class EmailService {
         html: htmlContent,
       });
 
+      console.log('[EmailService] Resend API Raw Response:', JSON.stringify(response, null, 2));
+
       if (response.error) {
+        console.error(`[EmailService] Resend returned an error when sending password reset to ${email}:`, response.error);
         throw new Error(response.error.message || JSON.stringify(response.error));
       }
 

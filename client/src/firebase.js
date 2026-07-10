@@ -110,7 +110,9 @@ export const emailSignup = async ({ email, password, displayName }) => {
   
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || 'Failed to send verification email.');
+    const err = new Error(data.error || 'Failed to send verification email.');
+    if (data.code) err.code = data.code;
+    throw err;
   }
 
   await signOut(auth);
@@ -134,7 +136,9 @@ export const resendVerificationEmail = async (user) => {
   
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || 'Failed to send verification email.');
+    const err = new Error(data.error || 'Failed to send verification email.');
+    if (data.code) err.code = data.code;
+    throw err;
   }
 };
 
@@ -153,7 +157,9 @@ export const sendPasswordReset = async (email) => {
   
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || 'Failed to send password reset email.');
+    const err = new Error(data.error || 'Failed to send password reset email.');
+    if (data.code) err.code = data.code;
+    throw err;
   }
 };
 
