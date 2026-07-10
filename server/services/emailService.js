@@ -25,12 +25,8 @@ class EmailService {
     const htmlContent = this.getVerificationEmailTemplate(verificationLink, firstName);
 
     if (!this.resend) {
-      console.log('--- EMAIL SIMULATION START ---');
-      console.log(`To: ${email}`);
-      console.log(`Subject: ${subject}`);
-      console.log(`Body Link: ${verificationLink}`);
-      console.log('--- EMAIL SIMULATION END ---');
-      return { id: 'simulated-verification-id', email, link: verificationLink };
+      console.warn(`[EmailService] Cannot send verification email to ${email} (RESEND_API_KEY is missing).`);
+      throw new Error('Email service configuration error: RESEND_API_KEY is not defined on the server.');
     }
 
     try {
@@ -68,12 +64,8 @@ class EmailService {
     const htmlContent = this.getPasswordResetEmailTemplate(resetLink, firstName);
 
     if (!this.resend) {
-      console.log('--- EMAIL SIMULATION START ---');
-      console.log(`To: ${email}`);
-      console.log(`Subject: ${subject}`);
-      console.log(`Body Link: ${resetLink}`);
-      console.log('--- EMAIL SIMULATION END ---');
-      return { id: 'simulated-password-reset-id', email, link: resetLink };
+      console.warn(`[EmailService] Cannot send password reset email to ${email} (RESEND_API_KEY is missing).`);
+      throw new Error('Email service configuration error: RESEND_API_KEY is not defined on the server.');
     }
 
     try {

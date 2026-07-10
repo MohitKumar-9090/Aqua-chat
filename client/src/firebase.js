@@ -107,9 +107,17 @@ export const emailSignup = async ({ email, password, displayName }) => {
       firstName: name
     })
   });
-  
+
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      'Verification request did not reach the server. Please check your deployment configuration.'
+    );
+  }
+
+  const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
     const err = new Error(data.error || 'Failed to send verification email.');
     if (data.code) err.code = data.code;
     throw err;
@@ -133,9 +141,17 @@ export const resendVerificationEmail = async (user) => {
       firstName: user.displayName || undefined
     })
   });
-  
+
+  const contentType2 = response.headers.get('content-type') || '';
+  if (!contentType2.includes('application/json')) {
+    throw new Error(
+      'Verification request did not reach the server. Please check your deployment configuration.'
+    );
+  }
+
+  const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
     const err = new Error(data.error || 'Failed to send verification email.');
     if (data.code) err.code = data.code;
     throw err;
@@ -154,12 +170,27 @@ export const sendPasswordReset = async (email) => {
       redirectUrl: window.location.origin
     })
   });
-  
+
+  // Guard: if the response is HTML instead of JSON, the request hit the
+  // SPA fallback (Vercel/Vite) and never reached the real backend.
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      'Password reset request did not reach the server. Please check your deployment configuration.'
+    );
+  }
+
+  const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
     const err = new Error(data.error || 'Failed to send password reset email.');
     if (data.code) err.code = data.code;
     throw err;
+  }
+
+  // Even on 200, verify the backend confirmed success
+  if (!data.success && !data.ok) {
+    throw new Error(data.error || 'Server returned an unexpected response.');
   }
 };
 
