@@ -1,6 +1,33 @@
+function parseSafeDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value.toDate === 'function') {
+    try {
+      return value.toDate();
+    } catch (e) {
+      return null;
+    }
+  }
+  if (typeof value === 'object') {
+    if (typeof value.seconds === 'number') {
+      return new Date(value.seconds * 1000);
+    }
+    if (typeof value._seconds === 'number') {
+      return new Date(value._seconds * 1000);
+    }
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function formatTime(value) {
-  if (!value) return '';
-  return new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+  const date = parseSafeDate(value);
+  if (!date) return '';
+  try {
+    return new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(date);
+  } catch (err) {
+    return '';
+  }
 }
 
 export function directPeer(chat, me) {
@@ -20,10 +47,8 @@ export function chatImage(chat, me) {
 }
 
 export function formatLastSeen(value) {
-  if (!value) return 'offline';
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'offline';
+  const date = parseSafeDate(value);
+  if (!date) return 'offline';
 
   const now = Date.now();
   const diffMs = now - date.getTime();
@@ -37,16 +62,16 @@ export function formatLastSeen(value) {
 
   const today = new Date();
   const isToday = date.toDateString() === today.toDateString();
-  if (isToday) return `last seen today at ${formatTime(value)}`;
+  if (isToday) return `last seen today at ${formatTime(date)}`;
 
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) {
-    return `last seen yesterday at ${formatTime(value)}`;
+    return `last seen yesterday at ${formatTime(date)}`;
   }
 
   const datePart = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  return `last seen ${datePart} at ${formatTime(value)}`;
+  return `last seen ${datePart} at ${formatTime(date)}`;
 }
 
 export function statusText(user) {
