@@ -99,13 +99,13 @@ const rtdbUpdate = async (path, value, operation = 'update') => {
   }
 };
 
-const rtdbRemove = async (path, operation = 'remove') => {
-  logRtdb(operation, path);
+const rtdbRootUpdate = async (value, operation = 'rootUpdate') => {
+  logRtdb(operation, '/', { paths: Object.keys(value) });
   try {
-    await remove(dbRef(realtimeDb, path));
+    await update(dbRef(realtimeDb), value);
   } catch (error) {
-    logRtdbError(operation, path, error);
-    throw error;
+    logRtdbError(operation, '/', error);
+    throw toCallError(error, 'Could not update call data.');
   }
 };
 
@@ -391,8 +391,9 @@ export const subscribeIceCandidates = (callId, uid, handler) => {
 };
 
 /**
- * Callee accept: update answer on calls/{callId}, then clear userIncoming/{calleeUid}/{callId}.
- * Operations are split so a failing remove does not mask a successful answer.
+ * Callee accept: publish the answer, activate the room, and clear the incoming
+ * entry in one RTDB update. This avoids a stale incoming entry or an "active"
+ * room that reaches the caller before its answer.
  */
 export const sendCallAnswer = async (callId, calleeUid, answer, targetUid = null) => {
   const uid = calleeUid || (await signalingUid());
@@ -400,16 +401,11 @@ export const sendCallAnswer = async (callId, calleeUid, answer, targetUid = null
   const incomingPath = `userIncoming/${uid}/${callId}`;
   const answerPath = targetUid ? `calls/${callId}/answers/${targetUid}` : `calls/${callId}/answer`;
 
-  // Write answer + status in parallel for faster connection
-  await Promise.all([
-    rtdbSet(answerPath, JSON.parse(JSON.stringify(answer)), 'sendCallAnswer:answer'),
-    rtdbSet(`calls/${callId}/status`, 'active', 'sendCallAnswer:status')
-  ]);
-
-  // Non-blocking cleanup of ring index
-  rtdbRemove(incomingPath, 'sendCallAnswer:removeIncoming').catch((error) => {
-    logRtdbError('sendCallAnswer:removeIncoming', incomingPath, error);
-  });
+  await rtdbRootUpdate({
+    [answerPath]: JSON.parse(JSON.stringify(answer)),
+    [`calls/${callId}/status`]: 'active',
+    [incomingPath]: null
+  }, 'sendCallAnswer');
 };
 
 export const endCallRoom = async (callId, from, to) => {
@@ -439,4 +435,3 @@ export const updateParticipantCallState = async (callId, targetUid, state) => {
   const path = `calls/${callId}/participantsState/${targetUid}`;
   await rtdbUpdate(path, state, 'updateParticipantCallState');
 };
-

@@ -4,8 +4,18 @@ const INVALID_TOKEN_ERRORS = new Set([
 ]);
 
 const TOKEN_BATCH_SIZE = 500;
+const MAX_FCM_SEND_ATTEMPTS = 3;
+const FCM_RETRY_DELAY_MS = 250;
 
 const asString = (value) => String(value ?? '');
+
+const RETRYABLE_FCM_ERRORS = new Set([
+  'messaging/internal-error',
+  'messaging/server-unavailable',
+  'messaging/unknown-error',
+  'messaging/device-message-rate-exceeded',
+  'messaging/topics-message-rate-exceeded'
+]);
 
 const notificationPreview = (message) => {
   const body = asString(message.body).trim();
@@ -34,12 +44,61 @@ const chunks = (items, size) => {
   return result;
 };
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const removeInvalidTokens = async (admin, userRef, tokens) => {
   if (!tokens.length) return;
   await userRef.update({
     fcmTokens: admin.firestore.FieldValue.arrayRemove(...tokens)
   });
   console.info(`[Notifications] Removed ${tokens.length} invalid FCM token(s) from ${userRef.id}.`);
+};
+
+/**
+ * Retries only the tokens that FCM explicitly reports as transient failures.
+ * Successful tokens are never resent, which prevents retry-induced duplicates.
+ */
+const sendBatchWithRetry = async (admin, uid, tokens, message) => {
+  const invalidTokens = [];
+  let pendingTokens = tokens;
+
+  for (let attempt = 1; pendingTokens.length && attempt <= MAX_FCM_SEND_ATTEMPTS; attempt += 1) {
+    let response;
+    try {
+      response = await admin.messaging().sendEachForMulticast({
+        tokens: pendingTokens,
+        ...message
+      });
+    } catch (error) {
+      if (attempt === MAX_FCM_SEND_ATTEMPTS) {
+        console.error(`[Notifications] FCM batch send failed for ${uid} after ${attempt} attempt(s):`, error.message);
+        break;
+      }
+      console.warn(`[Notifications] FCM batch send failed for ${uid}; retrying (${attempt}/${MAX_FCM_SEND_ATTEMPTS}):`, error.message);
+      await wait(FCM_RETRY_DELAY_MS * attempt);
+      continue;
+    }
+
+    const retryTokens = [];
+    response.responses.forEach((result, index) => {
+      if (result.success) return;
+
+      const token = pendingTokens[index];
+      const errorCode = result.error?.code;
+      if (INVALID_TOKEN_ERRORS.has(errorCode)) {
+        invalidTokens.push(token);
+      } else if (RETRYABLE_FCM_ERRORS.has(errorCode) && attempt < MAX_FCM_SEND_ATTEMPTS) {
+        retryTokens.push(token);
+      } else {
+        console.warn(`[Notifications] FCM delivery failed for ${uid}:`, errorCode || result.error?.message);
+      }
+    });
+
+    pendingTokens = retryTokens;
+    if (pendingTokens.length) await wait(FCM_RETRY_DELAY_MS * attempt);
+  }
+
+  return invalidTokens;
 };
 
 const sendToUser = async (admin, firestore, uid, { title, body, data, isCall = false }) => {
@@ -50,37 +109,31 @@ const sendToUser = async (admin, firestore, uid, { title, body, data, isCall = f
   const tokens = tokenList(userSnapshot.get('fcmTokens'));
   if (!tokens.length) return;
 
+  const message = {
+    // Data messages are handled by the existing foreground listener and service
+    // worker, so the same payload works while the app is open, backgrounded, or
+    // launched from a terminated state.
+    data: Object.fromEntries(Object.entries({
+      ...data,
+      title,
+      body,
+      message: body,
+      messagePreview: body
+    }).map(([key, value]) => [key, asString(value)])),
+    android: {
+      priority: 'high'
+    },
+    webpush: {
+      headers: {
+        Urgency: isCall ? 'high' : 'normal',
+        TTL: isCall ? '60' : '86400'
+      }
+    }
+  };
+
   const invalidTokens = [];
   for (const batch of chunks(tokens, TOKEN_BATCH_SIZE)) {
-    const response = await admin.messaging().sendEachForMulticast({
-      tokens: batch,
-      // Data-only messages let the existing service worker control foreground,
-      // background, and Android PWA notification presentation consistently.
-      data: Object.fromEntries(Object.entries({
-        ...data,
-        title,
-        body,
-        messagePreview: body
-      }).map(([key, value]) => [key, asString(value)])),
-      android: {
-        priority: 'high'
-      },
-      webpush: {
-        headers: {
-          Urgency: isCall ? 'high' : 'normal',
-          TTL: isCall ? '60' : '86400'
-        }
-      }
-    });
-
-    response.responses.forEach((result, index) => {
-      if (!result.success && INVALID_TOKEN_ERRORS.has(result.error?.code)) {
-        invalidTokens.push(batch[index]);
-      }
-      if (!result.success && !INVALID_TOKEN_ERRORS.has(result.error?.code)) {
-        console.warn(`[Notifications] FCM delivery failed for ${uid}:`, result.error?.code || result.error?.message);
-      }
-    });
+    invalidTokens.push(...await sendBatchWithRetry(admin, uid, batch, message));
   }
 
   try {
@@ -125,6 +178,7 @@ const sendMessageNotification = async (admin, firestore, messageSnapshot) => {
         senderId,
         senderName,
         receiverId: recipientId,
+        message: body,
         messageType: message.type || 'text',
         tag: `message-${chatId}`,
         url: `/?chat=${encodeURIComponent(chatId)}`
@@ -205,18 +259,24 @@ const startIncomingCallListener = async (admin, firestore) => {
           const caller = callerSnapshot.exists ? callerSnapshot.data() : {};
           const callerName = asString(caller.displayName || caller.name || 'AquaChat user').trim();
           const isVideo = call.callType === 'video';
+          const timestamp = call.createdAt || Date.now();
           return sendToUser(admin, firestore, uid, {
             title: `${callerName} is calling`,
             body: isVideo ? 'Incoming video call' : 'Incoming voice call',
             isCall: true,
             data: {
               type: 'call',
+              notificationType: 'incoming_call',
               callType: isVideo ? 'video' : 'voice',
               callId: callSnapshot.key,
               chatId: asString(call.chatId),
+              callerId,
+              callerName,
               senderId: callerId,
               senderName: callerName,
               receiverId: uid,
+              isVideo,
+              timestamp,
               tag: `call-${callSnapshot.key}`,
               url: call.chatId
                 ? `/?chat=${encodeURIComponent(call.chatId)}&callId=${encodeURIComponent(callSnapshot.key)}`
@@ -247,6 +307,71 @@ const startIncomingCallListener = async (admin, firestore) => {
   };
 };
 
+/**
+ * Clients can only remove incoming indexes they are authorized to write. In a
+ * group call, that can leave an index behind for another recipient after a
+ * participant ends the room. The backend cleans those indexes whenever a room
+ * ends or is deleted, keeping a stale room from being treated as a new call.
+ */
+const startCallCleanupListener = async (admin) => {
+  const database = admin.database();
+  const callsRoot = database.ref('calls');
+
+  const clearIncomingIndexes = async (callSnapshot) => {
+    const call = callSnapshot.val() || {};
+    const recipients = new Set([
+      asString(call.from).trim(),
+      ...(Array.isArray(call.to) ? call.to : [call.to]),
+      ...Object.keys(call.participants || {})
+    ].map((uid) => asString(uid).trim()).filter(Boolean));
+
+    if (!recipients.size) return;
+
+    const updates = {};
+    recipients.forEach((uid) => {
+      updates[`userIncoming/${uid}/${callSnapshot.key}`] = null;
+    });
+    await database.ref().update(updates);
+  };
+
+  const changedHandler = (callSnapshot) => {
+    if (callSnapshot.child('status').val() !== 'ended') return;
+
+    clearIncomingIndexes(callSnapshot)
+      .then(() => callSnapshot.ref.remove())
+      .catch((error) => console.error(`[Notifications] Could not clean ended call ${callSnapshot.key}:`, error.message));
+  };
+  const removedHandler = (callSnapshot) => {
+    clearIncomingIndexes(callSnapshot)
+      .catch((error) => console.error(`[Notifications] Could not clean incoming indexes for ${callSnapshot.key}:`, error.message));
+  };
+
+  callsRoot.on('child_changed', changedHandler);
+  callsRoot.on('child_removed', removedHandler);
+
+  // Clean up sessions that were marked ended before this process restarted.
+  const existingCalls = await callsRoot.once('value');
+  const staleCleanups = [];
+  existingCalls.forEach((callSnapshot) => {
+    if (callSnapshot.child('status').val() !== 'ended') return;
+    staleCleanups.push(
+      clearIncomingIndexes(callSnapshot)
+        .then(() => callSnapshot.ref.remove())
+    );
+  });
+  const cleanupResults = await Promise.allSettled(staleCleanups);
+  cleanupResults.forEach((result) => {
+    if (result.status === 'rejected') {
+      console.error('[Notifications] Could not clean a stale ended call:', result.reason?.message || result.reason);
+    }
+  });
+
+  return () => {
+    callsRoot.off('child_changed', changedHandler);
+    callsRoot.off('child_removed', removedHandler);
+  };
+};
+
 let stopService = null;
 
 export const startNotificationService = async (admin) => {
@@ -256,11 +381,18 @@ export const startNotificationService = async (admin) => {
   const messageListenerPromise = startMessageListener(admin, firestore);
   let stopMessageListener = () => {};
   let stopCallListener = () => {};
+  let stopCallCleanupListener = () => {};
 
   try {
     stopCallListener = await startIncomingCallListener(admin, firestore);
   } catch (error) {
     console.error('[Notifications] RTDB call listener was not started:', error.message);
+  }
+
+  try {
+    stopCallCleanupListener = await startCallCleanupListener(admin);
+  } catch (error) {
+    console.error('[Notifications] RTDB call cleanup listener was not started:', error.message);
   }
 
   try {
@@ -273,6 +405,7 @@ export const startNotificationService = async (admin) => {
   stopService = () => {
     stopMessageListener();
     stopCallListener();
+    stopCallCleanupListener();
     stopService = null;
   };
   console.info('[Notifications] FCM notification service started.');
