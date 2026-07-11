@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { isAndroid, isIos, isPwaDisplayMode, isSecureContext } from '../pwa.js';
-import { requestNotificationPermission } from '../pwa.js';
+import { isAndroid, isPwaDisplayMode, isSecureContext } from '../pwa.js';
+import { installOrDownload } from '../utils/device.js';
 
-const APK_URL = 'https://github.com/MohitKumar-9090/Aqua-chat/releases/latest/download/Aqua.chat.apk';
 const APK_DISMISS_KEY = 'aquachat_apk_dismissed_at';
 const APK_DISMISS_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -58,29 +57,32 @@ export const useApkDownload = () => {
     }
   }, []);
 
-  const downloadApk = useCallback(async () => {
-    console.log('Download button clicked');
+  const smartInstall = useCallback(async () => {
+    console.log('[Smart Install] Button clicked');
     setIsDownloading(true);
     setDownloadProgress(0);
 
     try {
-      window.location.href = APK_URL;
-      console.log('APK URL opened');
-      
-      setDownloadProgress(100);
-      dismissPrompt('download_completed');
-      
-      return { success: true };
+      const result = await installOrDownload();
+      console.log('[Smart Install] Outcome:', result.outcome);
+
+      if (result.outcome === 'apk_started') {
+        setDownloadProgress(100);
+        dismissPrompt('download_completed');
+      }
+
+      return result;
     } catch (error) {
-      console.error('APK download failed:', error);
-      return { success: false, error: error.message };
+      console.error('[Smart Install] Failed:', error);
+      return { outcome: 'error', instructions: error.message };
     } finally {
       setIsDownloading(false);
       setDownloadProgress(0);
     }
   }, [dismissPrompt]);
 
-  const showInstallButton = isAndroidDevice;
+  // Show install button on all platforms (not just Android)
+  const showInstallButton = isSecureContext();
 
   return {
     apkMetadata,
@@ -89,7 +91,7 @@ export const useApkDownload = () => {
     downloadProgress,
     isDownloading,
     showPrompt: showPrompt && isAndroidDevice,
-    downloadApk,
+    smartInstall,
     dismissPrompt,
     showInstallButton,
     isAndroid: isAndroidDevice,

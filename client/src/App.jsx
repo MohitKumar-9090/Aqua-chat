@@ -270,7 +270,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     downloadProgress,
     isDownloading,
     showPrompt: showInstall,
-    downloadApk,
+    smartInstall,
     dismissPrompt: dismissInstallPrompt,
     showInstallButton
   } = useApkDownload();
@@ -1284,15 +1284,35 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   };
 
   const handleInstall = async () => {
-    const result = await downloadApk();
-    if (result?.success) {
-      const permission = await requestNotificationPermission();
-      if (permission === 'granted') {
-        const token = await registerMessagingToken();
-        if (token) {
-          api.saveMessagingToken(token).catch(console.error);
+    const result = await smartInstall();
+    if (!result) return;
+
+    switch (result.outcome) {
+      case 'apk_started': {
+        // APK download initiated — request notification permission
+        const permission = await requestNotificationPermission();
+        if (permission === 'granted') {
+          const token = await registerMessagingToken();
+          if (token) {
+            api.saveMessagingToken(token).catch(console.error);
+          }
         }
+        break;
       }
+      case 'pwa_installed':
+        toastSuccess('AquaChat installed successfully!');
+        break;
+      case 'pwa_manual':
+        toastSuccess(result.instructions || 'Use the browser menu to install AquaChat.');
+        break;
+      case 'ios_coming_soon':
+        toastSuccess('AquaChat for iPhone is coming soon.');
+        break;
+      case 'app_store':
+        // Redirect already happened — nothing to do.
+        break;
+      default:
+        break;
     }
   };
 
@@ -2396,7 +2416,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
                   onClick={handleInstall}
                   disabled={isDownloading}
                   className="rounded-2xl bg-cyan-500 p-2.5 text-white shadow-md shadow-cyan-200/60 transition duration-200 hover:bg-cyan-600 disabled:opacity-75 disabled:cursor-not-allowed"
-                  title="Download AquaChat APK"
+                  title="Download AquaChat"
                 >
                   <Download size={18} />
                 </button>
