@@ -4,6 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import { v2 as cloudinary } from 'cloudinary';
 import emailService from './services/emailService.js';
+import { startNotificationService } from './services/notificationService.js';
 
 const app = express();
 
@@ -40,8 +41,12 @@ const getFirebaseAdmin = async () => {
     if (serviceAccountJson) {
       try {
         const serviceAccount = JSON.parse(serviceAccountJson);
+        const projectId = serviceAccount.project_id || serviceAccount.projectId;
+        const databaseURL = process.env.FIREBASE_DATABASE_URL?.trim().replace(/^['"]|['"]$/g, '')
+          || (projectId ? `https://${projectId}-default-rtdb.firebaseio.com` : undefined);
         admin.default.initializeApp({
-          credential: admin.default.credential.cert(serviceAccount)
+          credential: admin.default.credential.cert(serviceAccount),
+          ...(databaseURL ? { databaseURL } : {})
         });
         console.log('[FirebaseAdmin] Initialized successfully using FIREBASE_SERVICE_ACCOUNT_JSON.');
       } catch (err) {
@@ -57,8 +62,11 @@ const getFirebaseAdmin = async () => {
       }
 
       if (projectId && clientEmail && privateKey) {
+        const databaseURL = process.env.FIREBASE_DATABASE_URL?.trim().replace(/^['"]|['"]$/g, '')
+          || `https://${projectId}-default-rtdb.firebaseio.com`;
         admin.default.initializeApp({
-          credential: admin.default.credential.cert({ projectId, clientEmail, privateKey })
+          credential: admin.default.credential.cert({ projectId, clientEmail, privateKey }),
+          databaseURL
         });
         console.log('[FirebaseAdmin] Initialized successfully using project credentials.');
       } else {
@@ -294,4 +302,10 @@ app.post('/api/cloudinary/delete', verifyAuth, async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+
+  // Notifications are listeners only: they add no HTTP route and do not alter
+  // client message/call writes. Start them after Express is accepting traffic.
+  getFirebaseAdmin()
+    .then((admin) => startNotificationService(admin))
+    .catch((error) => console.error('[Notifications] Startup failed:', error.message));
 });
