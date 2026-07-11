@@ -133,16 +133,38 @@ const sendMessageNotification = async (admin, firestore, messageSnapshot) => {
   ));
 };
 
-const startMessageListener = (admin, firestore) => {
-  // Only messages committed after this process starts are notification events.
-  // This avoids scanning or re-notifying the complete message history on each
-  // Render restart while preserving the existing Firestore schema.
-  const startedAt = admin.firestore.Timestamp.now();
+const startMessageListener = async (admin, firestore) => {
+  // Use a Firestore-issued read time as the listener watermark. The previous
+  // implementation used Render's local clock, which can differ from Firestore
+  // time and exclude legitimate message documents from the query.
+  const watermarkSnapshot = await firestore.collection('chats').limit(1).get();
+  const watermark = watermarkSnapshot.readTime;
+  const deliveredMessagePaths = new Map();
+  let processedSincePrune = 0;
 
-  return firestore.collectionGroup('messages').where('createdAt', '>=', startedAt).onSnapshot(
+  const wasDelivered = (messagePath) => {
+    const now = Date.now();
+    processedSincePrune += 1;
+    if (processedSincePrune >= 100) {
+      processedSincePrune = 0;
+      const expiresAt = now - 24 * 60 * 60 * 1000;
+      deliveredMessagePaths.forEach((sentAt, path) => {
+        if (sentAt < expiresAt) deliveredMessagePaths.delete(path);
+      });
+    }
+    if (deliveredMessagePaths.has(messagePath)) return true;
+    deliveredMessagePaths.set(messagePath, now);
+    return false;
+  };
+
+  // Unlike an RTDB child listener, Firestore requires a query. The watermark
+  // excludes history without relying on Render's clock; every document created
+  // after it, including initial query results, is a message event to deliver.
+  return firestore.collectionGroup('messages').where('createdAt', '>=', watermark).onSnapshot(
     (snapshot) => {
       const additions = snapshot.docChanges().filter((change) => change.type === 'added');
       additions.forEach((change) => {
+        if (wasDelivered(change.doc.ref.path)) return;
         sendMessageNotification(admin, firestore, change.doc).catch((error) => {
           console.error(`[Notifications] Message notification failed for ${change.doc.id}:`, error.message);
         });
@@ -231,13 +253,21 @@ export const startNotificationService = async (admin) => {
   if (stopService) return stopService;
 
   const firestore = admin.firestore();
-  const stopMessageListener = startMessageListener(admin, firestore);
+  const messageListenerPromise = startMessageListener(admin, firestore);
+  let stopMessageListener = () => {};
   let stopCallListener = () => {};
 
   try {
     stopCallListener = await startIncomingCallListener(admin, firestore);
   } catch (error) {
     console.error('[Notifications] RTDB call listener was not started:', error.message);
+  }
+
+  try {
+    stopMessageListener = await messageListenerPromise;
+    console.info('[Notifications] Message listener ready.');
+  } catch (error) {
+    console.error('[Notifications] Firestore message listener was not started:', error.message);
   }
 
   stopService = () => {
