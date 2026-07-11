@@ -1,11 +1,15 @@
 /**
  * Smart Download & Install — Centralized configuration.
  *
- * APK_DOWNLOAD_URL  – Direct GitHub Release asset link (no hardcoded versions).
- * APP_STORE_URL     – Apple App Store link. Leave empty until published.
+ * GITHUB_RELEASES_API – GitHub API endpoint to fetch the latest release metadata.
+ * GITHUB_RELEASES_PAGE – Fallback URL if the API call fails.
+ * APP_STORE_URL        – Apple App Store link. Leave empty until published.
  */
 
-export const APK_DOWNLOAD_URL =
-  'https://github.com/MohitKumar-9090/Aqua-chat/releases/latest/download/AquaChat.apk';
+export const GITHUB_RELEASES_API =
+  'https://api.github.com/repos/MohitKumar-9090/Aqua-chat/releases/latest';
+
+export const GITHUB_RELEASES_PAGE =
+  'https://github.com/MohitKumar-9090/Aqua-chat/releases/latest';
 
 export const APP_STORE_URL = '';

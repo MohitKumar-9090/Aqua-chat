@@ -5,7 +5,7 @@
  * getDeferredInstallPrompt, getInstallInstructions) — zero duplication.
  */
 
-import { APK_DOWNLOAD_URL, APP_STORE_URL } from '../config/download.js';
+import { GITHUB_RELEASES_API, GITHUB_RELEASES_PAGE, APP_STORE_URL } from '../config/download.js';
 import {
   isAndroid as pwaIsAndroid,
   isIos as pwaIsIos,
@@ -27,9 +27,34 @@ export const isDesktop = () => !isAndroid() && !isIOS();
 export const supportsPWAInstall = () => Boolean(getDeferredInstallPrompt());
 
 /**
+ * Resolve the direct APK download URL from the latest GitHub release.
+ * Finds the first .apk asset dynamically — no hardcoded filenames.
+ * Falls back to the GitHub releases page if the API call fails.
+ *
+ * @returns {Promise<string>}
+ */
+const resolveApkUrl = async () => {
+  try {
+    const res = await fetch(GITHUB_RELEASES_API, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+    const release = await res.json();
+    const apkAsset = release.assets?.find((a) => a.name?.endsWith('.apk'));
+    if (apkAsset?.browser_download_url) {
+      return apkAsset.browser_download_url;
+    }
+  } catch (err) {
+    console.warn('[Smart Install] GitHub API failed, using fallback:', err.message);
+  }
+  // Fallback: open the releases page so the user can download manually.
+  return GITHUB_RELEASES_PAGE;
+};
+
+/**
  * Platform-aware install router.
  *
- * Android        → opens APK download in a new tab.
+ * Android        → resolves latest APK from GitHub API and opens download.
  * iOS            → redirects to App Store or returns "coming soon".
  * Desktop / other → triggers PWA install prompt or returns manual instructions.
  *
@@ -38,11 +63,12 @@ export const supportsPWAInstall = () => Boolean(getDeferredInstallPrompt());
 export const installOrDownload = async () => {
   // ── Android ──────────────────────────────────────────────
   if (isAndroid()) {
+    const url = await resolveApkUrl();
     try {
-      window.open(APK_DOWNLOAD_URL, '_blank', 'noopener,noreferrer');
+      window.open(url, '_blank', 'noopener,noreferrer');
     } catch {
       // Popup-blocked fallback — navigate the current tab.
-      window.location.href = APK_DOWNLOAD_URL;
+      window.location.href = url;
     }
     return { outcome: 'apk_started' };
   }
