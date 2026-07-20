@@ -1,5 +1,5 @@
-importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/11.1.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/11.1.0/firebase-messaging-compat.js');
 
 // 1. Firebase Initialization
 // Parse query parameters passed during registration for environment flexibility.
@@ -12,16 +12,19 @@ const messagingSenderId = params.get('messagingSenderId');
 const appId = params.get('appId');
 
 const firebaseConfig = {
-  apiKey: apiKey || "AIzaSyDGCdrg1EJtQcs5OXTTjjzV8VOpLo2ujI0",
-  authDomain: authDomain || "you-me-96515.firebaseapp.com",
-  projectId: projectId || "you-me-96515",
-  storageBucket: storageBucket || "you-me-96515.appspot.com",
-  messagingSenderId: messagingSenderId || "72121838071",
-  appId: appId || "1:72121838071:web:5ad8d9017d4816ba0926f2"
+  apiKey,
+  authDomain,
+  projectId,
+  storageBucket,
+  messagingSenderId,
+  appId
 };
 
 let messaging = null;
 try {
+  if (!apiKey || !projectId || !messagingSenderId || !appId) {
+    throw new Error('Missing Firebase service-worker configuration.');
+  }
   firebase.initializeApp(firebaseConfig);
   messaging = firebase.messaging();
 } catch (error) {
@@ -207,7 +210,10 @@ const handlePushNotification = (payload) => {
   return self.registration.showNotification(title, options);
 };
 
-// Listen to native push events
+// Historical raw-push handler retained as a comment for rollback reference.
+/*
+ * Disabled duplicate raw-push handler. Firebase Messaging owns the push event;
+ * onBackgroundMessage below is the single background delivery path.
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
@@ -238,6 +244,7 @@ self.addEventListener('push', (event) => {
     })
   );
 });
+*/
 
 // Configure Firebase Background Message Handler for FCM compatibility
 try {

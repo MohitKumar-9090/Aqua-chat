@@ -52,6 +52,8 @@ export const isPwaDisplayMode = () =>
   window.navigator.standalone === true;
 
 let swRegistrationPromise = null;
+let lastTokenRefreshAt = 0;
+let tokenRefreshPromise = null;
 
 export const registerServiceWorker = () => {
   if (!isProd) {
@@ -157,6 +159,36 @@ export const registerMessagingToken = async () => {
   }
 };
 
+/**
+ * The web FCM SDK has no onTokenRefresh callback. Calling getToken at startup,
+ * when a new service worker takes control, and on a throttled foreground resume
+ * is the supported way to discover a rotated token without polling.
+ */
+export const subscribeMessagingTokenRefresh = (callback) => {
+  if (!('serviceWorker' in navigator)) return () => {};
+
+  const refresh = async () => {
+    const now = Date.now();
+    if (tokenRefreshPromise || now - lastTokenRefreshAt < 6 * 60 * 60 * 1000) return;
+    lastTokenRefreshAt = now;
+    tokenRefreshPromise = registerMessagingToken()
+      .then((token) => token && callback(token))
+      .catch((error) => console.warn('FCM token refresh failed:', error.message))
+      .finally(() => { tokenRefreshPromise = null; });
+    await tokenRefreshPromise;
+  };
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') void refresh();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', onVisibilityChange);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  return () => {
+    navigator.serviceWorker.removeEventListener('controllerchange', onVisibilityChange);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+  };
+};
+
 export const onForegroundMessage = (callback) => {
   const messaging = getFirebaseMessaging();
   if (!messaging) return () => {};
@@ -165,7 +197,7 @@ export const onForegroundMessage = (callback) => {
   });
 };
 
-export const showSystemNotification = async ({ title, body, icon, tag, url, requireInteraction = false, vibrate = [200, 100, 200] }) => {
+export const showSystemNotification = async ({ title, body, icon, tag, url, chatId = '', callId = '', type = 'message', requireInteraction = false, vibrate = [200, 100, 200] }) => {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const options = {
     body,
@@ -175,13 +207,13 @@ export const showSystemNotification = async ({ title, body, icon, tag, url, requ
     renotify: true,
     vibrate,
     requireInteraction,
-    data: { url: url || '/' }
+    data: { url: url || '/', chatId, callId, type }
   };
 
   try {
     const registration = await navigator.serviceWorker.getRegistration();
     if (registration?.showNotification) {
-      registration.showNotification(title, options);
+      await registration.showNotification(title, options);
       return;
     }
     new Notification(title, options);

@@ -296,13 +296,14 @@ export const subscribeCallRoom = (callId, handler) => {
   );
 };
 
-export const createCallRoom = async ({ callId, from, to, callType, participantIds = null }) => {
+export const createCallRoom = async ({ callId, from, to, callType, chatId = '', participantIds = null }) => {
   const callerUid = from || (await signalingUid());
   const path = `calls/${callId}`;
   const participants = participantIds ? callParticipants(callerUid, participantIds) : callParticipants(callerUid, to);
   await rtdbSet(path, {
     from: callerUid,
     to,
+    chatId,
     callType,
     status: 'ringing',
     offer: null,

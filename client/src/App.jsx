@@ -22,7 +22,7 @@ import { playIncomingRing, stopIncomingRing, unlockCallAudio } from './utils/cal
 import { error as toastError, success as toastSuccess } from './utils/toast.js';
 import { initError } from './firebase.js';
 import { useAuth } from './hooks/useAuth.js';
-import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage, startSwKeepalive } from './pwa.js';
+import { registerBackgroundSync, requestNotificationPermission, registerMessagingToken, showSystemNotification, onForegroundMessage, startSwKeepalive, stopSwKeepalive, subscribeMessagingTokenRefresh } from './pwa.js';
 import { useApkDownload } from './hooks/useApkDownload.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import { getCallRuntime } from './utils/callRuntime.js';
@@ -301,7 +301,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
   const chatsRef = useRef(chats);
   const usersRef = useRef(users);
   const blockStateRef = useRef(blockState);
-  const prevChatsRef = useRef([]);
   const initialNotificationHandledRef = useRef(false);
   const deliveredSetRef = useRef(new Set());
   const lastSyncedProfileRef = useRef(null);
@@ -478,14 +477,17 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (notifPermission !== 'granted') return undefined;
 
     let mounted = true;
+    const persistToken = (token) => {
+      if (!mounted || !token) return;
+      api.saveMessagingToken(token).catch((error) => console.warn('FCM token save failed:', error.message));
+    };
     registerMessagingToken()
-      .then((token) => {
-        if (!mounted || !token) return;
-        api.saveMessagingToken(token).catch(console.error);
-      })
+      .then(persistToken)
       .catch(console.error);
+    const unsubscribeTokenRefresh = subscribeMessagingTokenRefresh(persistToken);
     return () => {
       mounted = false;
+      unsubscribeTokenRefresh();
     };
   }, [firebaseUser?.uid, notifPermission]);
 
@@ -594,57 +596,6 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     return undefined;
   }, [chats]);
 
-  useEffect(() => {
-    // Always keep prevChatsRef in sync so it doesn't go stale when the tab is visible
-    const prevChats = prevChatsRef.current;
-    prevChatsRef.current = chats;
-
-    if (notifPermission !== 'granted') return undefined;
-    if (document.visibilityState === 'visible') return undefined;
-
-    const latestChat = chats.find((chat) => {
-      const previous = prevChats.find((item) => item._id === chat._id);
-      return (
-        previous &&
-        chat.lastMessage?._id !== previous.lastMessage?._id &&
-        chat.lastMessage?.senderId !== profile._id
-      );
-    });
-
-    if (latestChat) {
-      const message = latestChat.lastMessage;
-      if (message) {
-        void showSystemNotification({
-          title: chatTitle(latestChat, profile),
-          body: message.body || 'New message',
-          icon: message.sender?.photoURL || '/icon-192.png',
-          tag: `chat-${latestChat._id}`,
-          url: `/?chat=${latestChat._id}`
-        });
-      }
-    }
-
-    return undefined;
-  }, [chats, profile._id, notifPermission]);
-
-  useEffect(() => {
-    if (!callState?.active || !callState?.incoming) return undefined;
-    if (notifPermission !== 'granted') return undefined;
-    if (document.visibilityState === 'visible') return undefined;
-
-    void showSystemNotification({
-      title: `${callState.caller?.displayName || 'Incoming call'}`,
-      body: `${callState.callType === 'video' ? 'Video' : 'Voice'} call`,
-      icon: callState.caller?.photoURL || '/icon-192.png',
-      tag: `call-${callState.callId}`,
-      url: `/?chat=${callState.chatId || ''}&callId=${callState.callId}`,
-      requireInteraction: true,
-      vibrate: [200, 100, 200, 100, 200]
-    });
-
-    return undefined;
-  }, [callState?.active, callState?.incoming, callState?.callId, callState?.chatId]);
-
   const closeChat = () => {
     setSelectedChat(null);
     setMessages([]);
@@ -712,6 +663,9 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         icon: notification.icon || data.icon || '/icon-192.png',
         tag: data.tag || `aquachat-${data.chatId || 'general'}`,
         url: data.url || (data.chatId ? `/?chat=${data.chatId}` : '/'),
+        chatId: data.chatId || '',
+        callId: data.callId || '',
+        type: data.type || 'message',
         requireInteraction: isCall,
         vibrate: isCall ? [200, 100, 200, 100, 200] : [200, 100, 200]
       });
@@ -1081,6 +1035,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
       window.removeEventListener('offline', offline);
       document.removeEventListener('pointerdown', unlockAudio);
       document.removeEventListener('keydown', unlockAudio);
+      stopSwKeepalive();
     };
   }, []);
 
@@ -2041,6 +1996,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
         from: uid,
         to: targetIds,
         callType,
+        chatId: activeChatId,
         participantIds: targetIds
       });
 

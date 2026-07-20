@@ -300,12 +300,24 @@ app.post('/api/cloudinary/delete', verifyAuth, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+let stopNotificationService = null;
+const httpServer = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 
   // Notifications are listeners only: they add no HTTP route and do not alter
   // client message/call writes. Start them after Express is accepting traffic.
   getFirebaseAdmin()
     .then((admin) => startNotificationService(admin))
+    .then((stop) => { stopNotificationService = stop; })
     .catch((error) => console.error('[Notifications] Startup failed:', error.message));
 });
+
+const shutdown = (signal) => {
+  console.info(`[Server] ${signal} received; stopping notification listeners.`);
+  stopNotificationService?.();
+  httpServer.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10_000).unref();
+};
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));

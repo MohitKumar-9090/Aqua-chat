@@ -1670,20 +1670,34 @@ export const api = {
   },
 
   saveMessagingToken: async (token) => {
-    if (!token) throw new Error('Missing messaging token');
+    if (typeof token !== 'string' || token.length < 20 || token.length > 4096 || /\s/.test(token)) {
+      throw new Error('Invalid messaging token');
+    }
     const uid = currentUid();
     const userRef = doc(firestore, 'users', uid);
+    const storageKey = `aquachat.fcmToken.${uid}`;
+    const previousToken = typeof window !== 'undefined' ? window.localStorage.getItem(storageKey) : null;
+    const tokenUpdate = {
+      fcmTokens: arrayUnion(token),
+      updatedAt: serverTimestamp()
+    };
+    // Keep one token per browser installation.  Other installations retain
+    // their own token, while a browser-side FCM rotation replaces its old one.
     try {
-      await updateDoc(userRef, {
-        fcmTokens: arrayUnion(token),
-        updatedAt: serverTimestamp()
-      });
+      if (previousToken && previousToken !== token) {
+        await updateDoc(userRef, {
+          fcmTokens: arrayRemove(previousToken),
+          updatedAt: serverTimestamp()
+        });
+      }
+      await updateDoc(userRef, tokenUpdate);
     } catch (error) {
       await setDoc(userRef, {
         fcmTokens: [token],
         updatedAt: serverTimestamp()
       }, { merge: true });
     }
+    if (typeof window !== 'undefined') window.localStorage.setItem(storageKey, token);
     return { ok: true };
   },
 
