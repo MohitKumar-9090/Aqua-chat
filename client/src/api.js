@@ -637,6 +637,7 @@ const mapMessageDoc = (messageSnap, chatId) => {
   return {
     _id: messageSnap.id,
     id: messageSnap.id,
+    localKey: data.localKey || '',
     chat: chatId,
     sender,
     senderId: data.senderId || sender._id,
@@ -742,7 +743,7 @@ export const subscribeMessages = (chatId, handler) => {
   let lastEmitted = null;
   const primaryQuery = query(
     collection(firestore, 'chats', chatId, 'messages'),
-    orderBy('clientCreatedAt', 'asc'),
+    orderBy('clientCreatedAt', 'desc'),
     limit(100)
   );
 
@@ -775,28 +776,28 @@ export const subscribeMessages = (chatId, handler) => {
       q,
       (snap) => {
         if (activeChatId !== chatId) return;
-        let hasChanges = false;
         if (!snap.docChanges().length) {
           const ids = new Set(snap.docs.map((docSnap) => docSnap.id));
           snap.docs.forEach((docSnap) => messageMap.set(docSnap.id, mapMessageDoc(docSnap, chatId)));
           for (const id of [...messageMap.keys()]) {
             if (!ids.has(id)) {
               messageMap.delete(id);
-              hasChanges = true;
             }
           }
-        } else {
-          snap.docChanges().forEach((change) => {
-            if (change.type === 'removed') {
-              messageMap.delete(change.doc.id);
-              hasChanges = true;
-              return;
-            }
-            messageMap.set(change.doc.id, mapMessageDoc(change.doc, chatId));
-            hasChanges = true;
-          });
+          // Always emit after full sync — covers initial load from persistent
+          // cache where docChanges() is empty. shouldEmit() deduplicates.
+          emit();
+          return;
         }
-        if (hasChanges) emit();
+
+        snap.docChanges().forEach((change) => {
+          if (change.type === 'removed') {
+            messageMap.delete(change.doc.id);
+            return;
+          }
+          messageMap.set(change.doc.id, mapMessageDoc(change.doc, chatId));
+        });
+        emit();
       },
       (error) => {
         const path = `chats/${chatId}/messages`;
@@ -1402,13 +1403,13 @@ export const api = {
   },
 
   messages: async (chatId) => {
-    const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'asc'), limit(100)));
+    const snap = await getDocs(query(collection(firestore, 'chats', chatId, 'messages'), orderBy('clientCreatedAt', 'desc'), limit(100)));
     return {
       messages: snap.docs.map((docSnap) => ({ _id: docSnap.id, chat: chatId, ...docSnap.data(), createdAt: safeIsoString(docSnap.data().createdAt) || new Date().toISOString() }))
     };
   },
 
-  sendMessage: async ({ chatId, sender: senderInput, ...payload }) => {
+  sendMessage: async ({ chatId, sender: senderInput, clientCreatedAt: callerTimestamp, localKey: callerLocalKey, ...payload }) => {
     // 1. Wait for Firebase Auth to initialize
     await authReadyPromise;
 
@@ -1459,7 +1460,7 @@ export const api = {
     }
     const messageRef = doc(collection(firestore, 'chats', chatId, 'messages'));
     const sender = senderInput || (await readUserCached(uid));
-    const clientCreatedAt = Date.now();
+    const clientCreatedAt = callerTimestamp || Date.now();
     const replyToId = payload.replyTo ? (payload.replyTo.messageId || payload.replyTo._id || payload.replyTo.id) : null;
     const replyToBody = payload.replyTo ? (payload.replyTo.body || '') : null;
     const replyToName = payload.replyTo ? (payload.replyTo.senderName || payload.replyTo.sender?.displayName || '') : null;
@@ -1470,6 +1471,7 @@ export const api = {
       sender,
       senderId: uid,
       senderName: sender.displayName || sender.name || 'AquaChat user',
+      localKey: callerLocalKey || '',
       type: payload.type || 'text',
       body: payload.body || '',
       mediaUrl: payload.mediaUrl || '',
@@ -1532,6 +1534,7 @@ export const api = {
         _id: messageRef.id,
         id: messageRef.id,
         ...message,
+        localKey: callerLocalKey || '',
         createdAt: new Date(clientCreatedAt).toISOString(),
         pending: false
       }

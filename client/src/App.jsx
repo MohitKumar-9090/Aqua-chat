@@ -741,7 +741,19 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     if (!profile?._id) return undefined;
     let isFirst = true;
     const unsubscribeChats = subscribeChats((nextChats) => {
-      setChats(applyPresenceToChats(nextChats, presenceRef.current));
+      const openChat = selectedChatRef.current;
+      const openChatId = activeMessagesChatRef.current || openChat?._id;
+      const otherId = openChat?.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+      const presenced = applyPresenceToChats(nextChats, presenceRef.current);
+      if (openChatId) {
+        setChats(presenced.map((item) => {
+          const itemOtherId = item.participantIds?.find((id) => String(id).trim() !== String(profile?._id).trim());
+          const isMatch = item._id === openChatId || (openChat?.type === 'direct' && item.type === 'direct' && otherId && itemOtherId === otherId);
+          return isMatch ? { ...item, unreadCount: 0 } : item;
+        }));
+      } else {
+        setChats(presenced);
+      }
       maybeAutoSelectChat(nextChats);
       if (isFirst) {
         console.log('[STARTUP] CHATS_READY');
@@ -1317,7 +1329,7 @@ function ChatShell({ firebaseUser, profile, setProfile, logout }) {
     setFirebaseTyping(chatId, false).catch(() => {});
 
     try {
-      const { message } = await api.sendMessage({ chatId, sender: profile, ...payload });
+      const { message } = await api.sendMessage({ chatId, sender: profile, clientCreatedAt, localKey: tempId, ...payload });
       if (activeMessagesChatRef.current !== chatId) return;
       setMessages((current) => {
         const next = reconcileSentMessage(current, tempId, message);
