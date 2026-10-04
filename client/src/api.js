@@ -431,12 +431,16 @@ export const normalizePresenceMap = (presence = {}) => {
   const normalized = {};
   Object.entries(presence).forEach(([uid, data]) => {
     if (!data || typeof data !== 'object') return;
-    const online = Boolean(data.online ?? data.isOnline);
-    normalized[uid] = {
+    const online = Boolean(data.online ?? data.isOnline ?? (data.state === 'online'));
+    const cleanUid = String(uid).trim();
+    const entry = {
+      state: online ? 'online' : 'offline',
       online,
       isOnline: online,
       lastSeen: normalizeLastSeen(data.lastSeen)
     };
+    normalized[uid] = entry;
+    if (cleanUid && cleanUid !== uid) normalized[cleanUid] = entry;
   });
   return normalized;
 };

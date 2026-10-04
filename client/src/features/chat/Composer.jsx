@@ -1,3 +1,4 @@
+import EmojiPicker from './EmojiPicker.jsx';
 import { useRef, useState } from 'react';
 import { FileText, Mic, Paperclip, Send, Smile, X } from 'lucide-react';
 import { setTyping as setFirebaseTyping } from '../../api.js';
@@ -8,11 +9,32 @@ const emptyRecorder = { recording: false, stream: null, mediaRecorder: null, chu
 
 export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload, isMobile, disabled = false }) {
   const [text, setText] = useState('');
+  const [showEmoji, setShowEmoji] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [recorder, setRecorder] = useState(emptyRecorder);
   const fileRef = useRef(null);
+  const inputRef = useRef(null);
   const typingTimerRef = useRef(null);
+
+  const handleSelectEmoji = (emoji) => {
+    const input = inputRef.current;
+    if (input) {
+      const start = input.selectionStart ?? text.length;
+      const end = input.selectionEnd ?? text.length;
+      const nextText = text.slice(0, start) + emoji + text.slice(end);
+      setText(nextText);
+      type();
+      requestAnimationFrame(() => {
+        input.focus();
+        const cursor = start + emoji.length;
+        input.setSelectionRange(cursor, cursor);
+      });
+    } else {
+      setText((prev) => prev + emoji);
+      type();
+    }
+  };
 
   const type = () => {
     if (disabled) return;
@@ -24,6 +46,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
   const submit = (event) => {
     event.preventDefault();
     if (disabled || !text.trim() || uploading) return;
+    setShowEmoji(false);
     onSend({ type: 'text', body: text.trim() });
     setText('');
   };
@@ -122,8 +145,25 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
         </div>
       )}
 
-      <div className="mx-auto flex max-w-3xl items-end gap-1.5 px-2 py-3 sm:gap-2.5 sm:px-3 sm:py-4">
-        <button type="button" className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700" title="Emoji">
+      <div className="relative mx-auto flex max-w-3xl items-end gap-1.5 px-2 py-3 sm:gap-2.5 sm:px-3 sm:py-4">
+        <EmojiPicker
+          open={showEmoji}
+          onClose={() => setShowEmoji(false)}
+          onSelectEmoji={handleSelectEmoji}
+          isMobile={isMobile}
+        />
+        <button
+          type="button"
+          onClick={() => setShowEmoji((prev) => !prev)}
+          disabled={disabled || uploading}
+          className={`rounded-2xl p-2.5 transition duration-200 ${
+            showEmoji
+              ? 'bg-aqua-100 text-cyan-700 shadow-inner'
+              : 'text-slate-600 hover:bg-aqua-100/60 hover:text-cyan-700'
+          } disabled:opacity-50`}
+          title="Emoji"
+          aria-label="Toggle emoji picker"
+        >
           <Smile size={20} />
         </button>
         <button type="button" onClick={() => fileRef.current?.click()} disabled={disabled || uploading} className="rounded-2xl p-2.5 text-slate-600 transition duration-200 hover:bg-aqua-100/60 hover:text-cyan-700 disabled:opacity-50" title="Attach">
@@ -137,6 +177,7 @@ export default function Composer({ chat, replyTo, onClearReply, onSend, onUpload
           onChange={(e) => uploadFile(e.target.files?.[0])}
         />
         <input
+          ref={inputRef}
           value={text}
           onChange={(e) => { setText(e.target.value); type(); }}
           placeholder={disabled ? 'Messaging unavailable' : 'Message...'}

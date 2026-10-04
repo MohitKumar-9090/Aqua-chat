@@ -24,7 +24,7 @@ export function formatTime(value) {
   const date = parseSafeDate(value);
   if (!date) return '';
   try {
-    return new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(date);
+    return new Intl.DateTimeFormat([], { hour: 'numeric', minute: '2-digit', hour12: true }).format(date);
   } catch (err) {
     return '';
   }
@@ -48,34 +48,33 @@ export function chatImage(chat, me) {
 
 export function formatLastSeen(value) {
   const date = parseSafeDate(value);
-  if (!date) return 'offline';
+  if (!date) return 'Offline';
 
   const now = Date.now();
   const diffMs = now - date.getTime();
 
-  if (diffMs < 45_000) return 'last seen just now';
-  if (diffMs < 300_000) return 'last seen recently';
+  if (diffMs < 45_000) return 'Last seen just now';
   if (diffMs < 3_600_000) {
     const mins = Math.max(1, Math.floor(diffMs / 60_000));
-    return `last seen ${mins} min ago`;
+    return mins === 1 ? 'Last seen 1 minute ago' : `Last seen ${mins} minutes ago`;
   }
 
   const today = new Date();
   const isToday = date.toDateString() === today.toDateString();
-  if (isToday) return `last seen today at ${formatTime(date)}`;
+  if (isToday) return `Last seen today at ${formatTime(date)}`;
 
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) {
-    return `last seen yesterday at ${formatTime(date)}`;
+    return `Last seen yesterday at ${formatTime(date)}`;
   }
 
   const datePart = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  return `last seen ${datePart} at ${formatTime(date)}`;
+  return `Last seen ${datePart} at ${formatTime(date)}`;
 }
 
 export function statusText(user) {
-  if (user?.isOnline || user?.online) return 'online';
+  if (user?.isOnline || user?.online || user?.state === 'online') return '🟢 Online';
   return formatLastSeen(user?.lastSeen);
 }
 

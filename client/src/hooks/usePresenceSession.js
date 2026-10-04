@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { startPresenceSession, touchPresence } from '../services/presence.js';
+import { startPresenceSession, stopPresenceSession, touchPresence } from '../services/presence.js';
 import { forceRtdbOnline } from '../firebase.js';
 
 /**
@@ -26,12 +26,21 @@ export function usePresenceSession(uid) {
       forceRtdbOnline();
       touchPresence(uid).catch(console.error);
     };
+
+    const onBeforeUnload = () => {
+      stopPresenceSession(uid).catch(() => {});
+    };
+
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', onFocus);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('pagehide', onBeforeUnload);
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('pagehide', onBeforeUnload);
     };
   }, [uid]);
 }

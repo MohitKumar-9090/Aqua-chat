@@ -57,12 +57,28 @@ export default function AuthScreen() {
 
   const submitEmail = async (event) => {
     event.preventDefault();
-    setBusy(true);
+    if (busy) return; // prevent double-submit
     clearAlert();
 
+    // Pre-Firebase input validation
+    const emailValue = email.trim();
+    if (!emailValue) {
+      showError('Please enter your email address.');
+      return;
+    }
+    if (!password) {
+      showError('Please enter your password.');
+      return;
+    }
+    if (!isValidEmail(emailValue)) {
+      showError('Please enter a valid email address.');
+      return;
+    }
+
+    setBusy(true);
+
     try {
-      if (!isValidEmail(email)) throw Object.assign(new Error('Invalid email'), { code: 'auth/invalid-email' });
-      if (!password || password.length < 6) throw Object.assign(new Error('Weak password'), { code: 'auth/weak-password' });
+      if (password.length < 6) throw Object.assign(new Error('Weak password'), { code: 'auth/weak-password' });
 
       if (mode === 'signup') {
         if (!name.trim()) throw new Error('Name is required.');
@@ -70,24 +86,27 @@ export default function AuthScreen() {
 
         localStorage.setItem(
           PENDING_SIGNUP_KEY,
-          JSON.stringify({ name: name.trim(), username: username.trim(), email: email.trim() })
+          JSON.stringify({ name: name.trim(), username: username.trim(), email: emailValue })
         );
 
-        await emailSignup({ email, password, displayName: name });
-        setVerifyEmail(email.trim());
+        await emailSignup({ email: emailValue, password, displayName: name });
+        setVerifyEmail(emailValue);
         setVerifyPassword(password);
         setView('verify');
         showInfo('Account created! Check your email for the verification link.');
       } else {
-        const credential = await emailLogin(email, password);
+        const credential = await emailLogin(emailValue, password);
         if (!credential.user.emailVerified) {
-          setVerifyEmail(email.trim());
+          setVerifyEmail(emailValue);
           setVerifyPassword(password);
           setView('verify');
           showInfo('Please verify your email before continuing.');
         }
       }
     } catch (err) {
+      console.error('Firebase Sign-In Error:', err);
+      console.error('Firebase Error Code:', err?.code);
+      console.error('Firebase Error Message:', err?.message);
       showError(mapAuthError(err));
     } finally {
       setBusy(false);
@@ -95,12 +114,16 @@ export default function AuthScreen() {
   };
 
   const submitGoogle = async () => {
+    if (busy) return; // prevent double-submit
     setBusy(true);
     clearAlert();
     try {
       const result = await googleLogin();
       if (result?.redirecting) showInfo('Redirecting to Google sign-in…');
     } catch (err) {
+      console.error('Google Sign-In Error:', err);
+      console.error('Google Error Code:', err?.code);
+      console.error('Google Error Message:', err?.message);
       showError(mapAuthError(err));
     } finally {
       setBusy(false);

@@ -10,12 +10,16 @@ let connectedUnsubscribe = null;
 let authReadyUnsubscribe = null;
 
 const offlinePayload = () => ({
+  state: 'offline',
   online: false,
+  isOnline: false,
   lastSeen: serverTimestamp()
 });
 
 const onlinePayload = () => ({
+  state: 'online',
   online: true,
+  isOnline: true,
   lastSeen: serverTimestamp()
 });
 

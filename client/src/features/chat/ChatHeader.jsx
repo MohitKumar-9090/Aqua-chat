@@ -1,8 +1,8 @@
-import { memo, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, MoreVertical, Phone, Search, Video, X } from 'lucide-react';
 import Avatar from '../../components/Avatar.jsx';
 import ChatOptionsMenu from './ChatOptionsMenu.jsx';
-import { chatImage, chatTitle, directPeer, statusText } from '../../utils/chat.js';
+import { chatImage, chatTitle, directPeer, formatLastSeen, statusText } from '../../utils/chat.js';
 import { userHasUnviewedStatus } from '../../utils/statusHelpers.js';
 
 function ChatHeader({
@@ -29,7 +29,15 @@ function ChatHeader({
 }) {
   const menuAnchorRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
   const peer = directPeer(chat, me);
+  const isPeerOnline = Boolean(peer?.isOnline || peer?.online || peer?.state === 'online');
   const peerStatusRing = peer && userHasUnviewedStatus(statuses, peer._id, me?._id);
   const showTyping = typing && chat.type === 'direct';
 
@@ -70,11 +78,11 @@ function ChatHeader({
         }}
         className={`flex min-w-0 flex-1 items-center gap-2 sm:gap-3 cursor-pointer select-none`}
       >
-        <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={callsEnabled && peer?.isOnline} statusRing={peerStatusRing} />
+        <Avatar name={chatTitle(chat, me)} image={chatImage(chat, me)} online={callsEnabled && isPeerOnline} statusRing={peerStatusRing} />
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-black text-cyan-950">{chatTitle(chat, me)}</h2>
           <p className="truncate text-xs font-medium text-slate-500">
-            {showTyping ? `${typing.displayName} typing...` : chat.type === 'group' ? `${chat.participants.length} members` : callsEnabled ? statusText(peer) : 'offline'}
+            {showTyping ? `${typing.displayName} typing...` : chat.type === 'group' ? `${chat.participants.length} members` : callsEnabled ? (isPeerOnline ? '🟢 Online' : formatLastSeen(peer?.lastSeen)) : 'offline'}
           </p>
         </div>
       </div>

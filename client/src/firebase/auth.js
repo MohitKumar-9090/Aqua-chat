@@ -55,20 +55,23 @@ export const googleLogin = async () => {
   try {
     return await signInWithPopup(auth, googleProvider);
   } catch (error) {
+    console.error('Google Sign-In Error:', error);
+    console.error('Google Error Code:', error?.code);
+    console.error('Google Error Message:', error?.message);
+
     if (error.code === 'auth/popup-blocked' || error.code === 'auth/popup-closed-by-user') {
-      await signInWithRedirect(auth, googleProvider);
-      return { redirecting: true };
+      console.warn('Popup blocked or closed, attempting redirect...');
+      try {
+        await signInWithRedirect(auth, googleProvider);
+        return { redirecting: true };
+      } catch (redirectError) {
+        console.error('Redirect fallback error:', redirectError);
+        throw redirectError;
+      }
     }
-    if (error.code === 'auth/cancelled-popup-request') {
-      throw new Error('Popup request cancelled. Please try again.');
-    }
-    if (error.code === 'auth/network-request-failed') {
-      throw new Error('Network error. Please check your internet connection.');
-    }
-    if (error.code === 'auth/invalid-credential') {
-      throw new Error('Invalid Google credentials. Please try again or use another method.');
-    }
-    throw new Error(`Sign-in failed: ${error.message}`);
+
+    // Re-throw the original Firebase error so mapAuthError can read .code
+    throw error;
   }
 };
 
